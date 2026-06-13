@@ -1,0 +1,37 @@
+# Ignore data directory (top-level)
+/data/
+
+# VS Code settings
+.vscode/
+
+# Python cache
+__pycache__/
+
+# Image files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.tif
+*.webp
+*.svg
+*.heic
+*.heif
+*.raw
+*.cr2
+*.nef
+*.arw
+
+# Video files
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.flv
+*.mpg
+*.mpeg
+*.3gp
+*.ts

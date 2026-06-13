@@ -1,0 +1,12 @@
+# -*- coding: utf-8 -*-
+"""PADP-VLA v2 —— 7-Layer 架构(阶段 1 实施)。
+
+目录结构:
+    A_common/  —— 基础设施层
+    B_model/   —— 纯净模型层
+    C_sim/     —— 仿真边界
+    D_real/    —— 真机边界(阶段 1 占位)
+    E_cti/     —— 纯执行流
+    F_envs/    —— 环境管理
+    G_algo/    —— 算法调度
+"""

@@ -1,0 +1,38 @@
+"""契约 3:policy_registry —— Policy 注册表(全程序唯一)。"""
+import threading
+from typing import Dict, List, Type
+
+_POLICY_REGISTRY: Dict[str, Type] = {}
+_LOCK = threading.Lock()
+
+
+def register_policy(name: str):
+    """装饰器:把 Policy 类注册到 name 下面。"""
+    def decorator(cls):
+        with _LOCK:
+            if name in _POLICY_REGISTRY:
+                raise ValueError(f"Policy {name} already registered")
+            _POLICY_REGISTRY[name] = cls
+        return cls
+    return decorator
+
+
+def build_policy(config: dict):
+    """工厂:从 config 字典实例化 policy。
+
+    config 格式:
+        {"name": "padp_unet", "kwargs": {"d_h": 512, ...}}
+
+    等价于:
+        _POLICY_REGISTRY["padp_unet"](d_h=512, ...)
+    """
+    name = config["name"]
+    if name not in _POLICY_REGISTRY:
+        raise KeyError(
+            f"Unknown policy: {name}. Available: {list_policies()}"
+        )
+    return _POLICY_REGISTRY[name](**config.get("kwargs", {}))
+
+
+def list_policies() -> List[str]:
+    return list(_POLICY_REGISTRY.keys())
