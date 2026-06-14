@@ -87,6 +87,17 @@ class RobomimicZarrDataset(BaseVLADataset):
                 real_lens.append(int(d["actions"].shape[0]))
             real_lens = np.asarray(real_lens, dtype=np.int64)
 
+            # === 防漂移:以 hdf5 实际维度为准,config 漂移时 warning 但不报错 ===
+            actual_action_dim = int(demos[f"demo_0"]["actions"].shape[1])
+            if action_dim != actual_action_dim:
+                logger.warning(
+                    "[RobomimicZarrDataset] config action_dim=%d 与 hdf5 实际 %d 不一致;"
+                    "以 hdf5 为准(防御 config 漂移)。请把 E_cti/configs/*.yaml 的 "
+                    "data.shape_meta.action.shape 改成 [%d]",
+                    action_dim, actual_action_dim, actual_action_dim,
+                )
+                action_dim = actual_action_dim
+
             # 物理化填充(头尾各 pad horizon-1 帧)
             pad = horizon - 1
             real_lens_new = real_lens + 2 * pad
@@ -163,9 +174,9 @@ class RobomimicZarrDataset(BaseVLADataset):
             meta_g.create_dataset("episode_ends", data=np.asarray(episode_ends, dtype=np.int64))
             meta_g.create_dataset("episode_map", data=np.asarray(ep_meta, dtype=np.int64))
 
-        self.replay_buffer = root
+        self.replay_buffer = data_g  # SequenceSampler 期望 rb 直接含 'action' / rgb / lowdim 键
         self.sampler = SequenceSampler(
-            replay_buffer=root,
+            replay_buffer=data_g,
             episode_ends=np.asarray(episode_ends, dtype=np.int64),
             horizon=horizon,
             n_obs_steps=n_obs_steps,

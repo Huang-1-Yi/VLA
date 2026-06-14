@@ -18,22 +18,24 @@
 
 ## 0. 总体进度
 
-| 层级 | 文件数(v4-1 目标) | 进度 |
+| 层级 | 文件数(v4 重构后目标) | 进度 |
 |---|---|---|
 | 根目录 | 4 | 0/4 |
 | F_envs | 3 | 0/3 |
-| A_common | 15(核心) | 0/15 |
-| B_model | 12(核心) | 0/12 |
+| A_common | 16(核心,+1 `base_policy.py`) | 0/16 |
+| B_model | 8(核心,**-4 compose/** 整体迁出) | 0/8 |
 | C_sim | 5(核心,含 env_impl 拆) | 0/5 |
 | D_real | 0(阶段 1 占位) | 0/0 |
 | E_cti | 4(2 yaml + 2 py) | 0/4 |
 | F_envs | 3 | 0/3 |
-| G_algo | 5 | 0/5 |
-| **核心小计** | **48** | **0/48** |
-| + 各层 `__init__.py` 占位(命名空间) | ~12 | 0/12 |
-| **总文件数(含 __init__.py)** | **~60** | **0/60** |
+| G_algo | 7(核心,+2 `padp_policy.py` / `dp_policy.py`,+1 `fusion.py` 共享) | 0/7 |
+| **核心小计** | **50** | **0/50** |
+| + 各层 `__init__.py` 占位(命名空间) | ~9 | 0/9 |
+| **总文件数(含 __init__.py)** | **~59** | **0/59** |
 
-> v4-1.md 的"60 文件"包含命名空间 `__init__.py`。本清单按"核心 48 + 命名空间 12"分两段列。
+> v4-1.md 的"59 文件"包含命名空间 `__init__.py`。本清单按"核心 50 + 命名空间 9"分两段列。
+>
+> **v4 重构带来的变化**:`B_model/compose/` 整体迁出(4 文件 → 4 新位置),`B_model` 减 4,`A_common` 加 1,`G_algo` 加 3。
 
 ## 实施顺序(按依赖深度)
 
@@ -111,6 +113,18 @@
   - 目的:线性归一化基类(阶段 1 只单字段 LinearNormalizer)
   - 关键:`class LinearNormalizer` 含 `normalize(obs/action)` / `unnormalize`,字段按 `key` 分桶
   - 源:合并 [PADP/diffusion_policy/common/normalize_util.py](PADP/diffusion_policy/common/normalize_util.py) + [PADP/diffusion_policy/model/common/normalizer.py](PADP/diffusion_policy/model/common/normalizer.py)
+- [ ] **A_common/types/normalizer_utils.py**(阶段 1 辅助)
+  - 目的:抽 PADP `normalize_util.py` 的 `get_range_normalizer_from_stat` / `get_image_range_normalizer` / `robomimic_abs_action_only_normalizer_from_stat`
+  - 关键:3 个工厂函数,供 `normalizer.py` 调用
+  - 源:抽 [PADP/diffusion_policy/common/normalize_util.py](PADP/diffusion_policy/common/normalize_util.py)
+- [ ] **A_common/types/base_policy.py**(v4 重构后从 B_model/compose/ 上移)
+  - 目的:**契约 2** —— 所有 Policy 的统一基类
+  - 关键:`class BaseVLAPolicy(nn.Module)`, 抽象 `predict_action` + `encode_inputs`
+  - 源:**自创**(v4 阶段引入)
+  - 关键修正(v4 重构):
+    - **位置**:`A_common/types/base_policy.py`(不是 B_model/compose/)—— 因为 BaseVLAPolicy 是 protocol/abstract,匹配铁律 3
+    - **不含** `compute_loss`(v4 关键修正:loss 在 G_algo)
+    - 去掉 docstring 里的 "B_model" 描述,改为"G_algo 下的具体 Policy 类继承本类"
 
 ### 3.2 `A_common/registry/`(1 核心 + 1 init = 2)
 
@@ -234,27 +248,17 @@
   - 阶段 1 空,阶段 3 加 `openvla.py` / `octo.py`
   - 源(待加):参考 [GuidedVLA/src/openpi/models_pytorch/pi0_pytorch.py](GuidedVLA/src/openpi/models_pytorch/pi0_pytorch.py)
 
-### 4.6 `B_model/compose/`(3 核心 + 1 init = 4)
+### 4.6 ~~`B_model/compose/`~~ → **v4 重构后整个目录迁出到 G_algo**(本节已删除)
 
-- [ ] **B_model/compose/__init__.py**
-- [ ] **B_model/compose/base_policy.py**
-  - 目的:**契约 2** —— 所有 Policy 的统一基类
-  - 关键:`class BaseVLAPolicy(nn.Module)`, 抽象 `predict_action` + `encode_inputs`
-  - 源:参考 [PADP/diffusion_policy/policy/base_image_policy.py](PADP/diffusion_policy/policy/base_image_policy.py) + [GuidedVLA/packages/openpi-client/src/openpi_client/base_policy.py](GuidedVLA/packages/openpi-client/src/openpi_client/base_policy.py)
-  - 关键修正:**不**含 `compute_loss`(v4 关键修正:loss 在 G_algo)
-- [ ] **B_model/compose/fusion.py**
-  - 目的:FiLM / cross-attn / concat 三种 fusion 工具
-  - 关键:`def film(global_cond, h) -> h`、`def cross_attn(q, kv) -> h`、`def concat(*xs) -> h`
-  - 源:参考 [GuidedVLA/src/openpi/models_pytorch/attention/attn_paths.py](GuidedVLA/src/openpi/models_pytorch/attention/attn_paths.py)
-- [ ] **B_model/compose/padp_policy.py**
-  - 目的:**PADP 顶层 policy**,通过 `@register_policy("padp_unet")` 注册
-  - 关键:`class PadpUnetPolicy(BaseVLAPolicy)`,组合 `ResNet18Encoder + Conv1dActionEncoder + SinusoidalTimestepEncoder + state_proj + Unet1DPadp`
-  - 源:结构抄 [PADP/diffusion_policy/policy/PADP_diffusion_unet_image_policy.py](PADP/diffusion_policy/policy/PADP_diffusion_unet_image_policy.py)
-  - 关键修正:`predict_action` 不实现(raise NotImplementedError,改由 G_algo 控制);`forward(a_t, t, obs)` 暴露给 G_algo.compute_loss 用
-- [ ] **B_model/compose/dp_policy.py**
-  - 目的:baseline DP 顶层 policy,`@register_policy("dp_unet")`
-  - 关键:`class DpUnetPolicy(PadpUnetPolicy): pass` 继承复用
-  - 源:同 padp_policy,仅类名 / 注册名不同
+> **v4 重构后,B_model 不再含 Policy 类**(详见 [v4 §1.3](落地方案v4.md#13-为什么-b_model-不再含-policy-类设计动机))。
+> 4 个文件的迁移:
+> - `base_policy.py` → `A_common/types/base_policy.py`(已在 §3.1 列出)
+> - `padp_policy.py` → `G_algo/PADP/padp_policy.py`(已在 §8.3 列出)
+> - `dp_policy.py` → `G_algo/DP/dp_policy.py`(已在 §8.2 列出)
+> - `fusion.py` → `G_algo/common/fusion.py`(已在 §8.1 列出)
+>
+> B_model 现在的职责 = **可复用网络部件层**(`encoders / networks / adapters`),不再定义 Policy 类。
+> `B_model/compose/__init__.py` 删除。
 
 ---
 
@@ -396,8 +400,16 @@
     - 本文件**禁止** `from diffusers import DDIMScheduler` 或 `DDIMScheduler(...)` 调用
     - scheduler 由调用方(DP / PADP 的 `predict_action`)实例化后注入
   - 源:参考 [PADP/diffusion_policy/policy/schedulers.py](PADP/diffusion_policy/policy/schedulers.py) 的 DDIMScheduler 协议
+- [ ] **G_algo/common/position_noise.py**
+  - 目的:positionwise 加噪(共享给 PADP / SDP 等 position-aware 算法)
+  - 关键:`def add_position_noise(original_samples, noise, sqrt_alpha_bar_h, sqrt_one_minus_alpha_bar_h) -> Tensor`
+  - 源:抄 [PADP/diffusion_policy/policy/schedulers_padp.py](PADP/diffusion_policy/policy/schedulers_padp.py) 的 add_position_noise
+- [ ] **G_algo/common/fusion.py**(v4 重构后从 B_model/compose/ 迁来)
+  - 目的:FiLM / cross-attn 共享工具
+  - 关键:`def film(global_cond, h) -> h`、`def cross_attn(q, kv) -> h`
+  - 源:参考 [GuidedVLA/src/openpi/models_pytorch/attention/attn_paths.py](GuidedVLA/src/openpi/models_pytorch/attention/attn_paths.py)
 
-### 8.2 `G_algo/DP/`(1 核心 + 1 init = 2)
+### 8.2 `G_algo/DP/`(2 核心 + 1 init = 3)
 
 - [ ] **G_algo/DP/__init__.py**
 - [ ] **G_algo/DP/dp_pipeline.py**
@@ -407,8 +419,15 @@
   - `compute_loss` 内部实例化训练用 `DDIMScheduler` 用于 `add_noise`
   - loss = `F.mse_loss(pred_noise, noise)`(无位置加权)
   - 源:参考 [PADP/diffusion_policy/policy/robomimic/diffusion_unet_hybrid_image_policy.py](PADP/diffusion_policy/policy/robomimic/diffusion_unet_hybrid_image_policy.py) 的训练 loop 逻辑(抽到 G_algo)
+- [ ] **G_algo/DP/dp_policy.py**(v4 重构后从 B_model/compose/ 迁来)
+  - 目的:baseline DP 顶层 policy,`@register_policy("dp_unet")`
+  - 关键:`class DpUnetPolicy(PadpUnetPolicy): pass` 继承复用(共享同一个 UNet 模型)
+  - 关键修正(v4 重构):
+    - 位置:`G_algo/DP/dp_policy.py`(不是 B_model/compose/)
+    - import 路径:`from G_algo.PADP.padp_policy import PadpUnetPolicy`(**G_algo/DP → G_algo/PADP 跨算法依赖,有意**)
+  - 源:同 PadpUnetPolicy(继承复用,无新代码)
 
-### 8.3 `G_algo/PADP/`(3 核心 + 1 init = 4)
+### 8.3 `G_algo/PADP/`(4 核心 + 1 init = 5)
 
 - [ ] **G_algo/PADP/__init__.py**
 - [ ] **G_algo/PADP/padp_pipeline.py**
@@ -417,6 +436,15 @@
   - **铁律 5 体现**:`predict_action` **内部**实例化自己的 `DDIMScheduler`(可与 DP 不同超参:`eta=0.0` / `beta_schedule='squaredcos_cap_v2'`),作为参数传给 `common.denoise_loop(policy, encoded, scheduler, ...)`
   - loss = `(pred - target)^2 * w[None,:,None]`.mean()
   - 源:参考 [PADP/diffusion_policy/workspace/robomimic/train_padp_workspace_v3.py](PADP/diffusion_policy/workspace/robomimic/train_padp_workspace_v3.py) 抽出的算法核心(去 workspace class)
+- [ ] **G_algo/PADP/padp_policy.py**(v4 重构后从 B_model/compose/ 整体迁来)
+  - 目的:**PADP 顶层 policy**,通过 `@register_policy("padp_unet")` 注册
+  - 关键:`class PadpUnetPolicy(BaseVLAPolicy)`,组合 `RobomimicObsEncoder + state_proj + Unet1DPadp` + **PADP 位置感知 buffer**(alpha_bar / window weights / inference buffer)
+  - 关键修正(v4 重构):
+    - 位置:`G_algo/PADP/padp_policy.py`(不是 B_model/compose/)—— Policy 类归 G_algo
+    - `BaseVLAPolicy` import 路径:`from A_common.types.base_policy import BaseVLAPolicy`
+    - 显式 import `B_model.encoders.VM.robomimic_obs_encoder` 与 `B_model.networks.DM.unet1d_padp`,**实例化**它们
+    - 保留旧文件 248 行完整实现(`_build_horizon_alpha_bar` / `_apply_position_noise` / `_init_inference_buffer` / `predict_action` sliding window)
+  - 源:结构抄 [PADP/diffusion_policy/policy/robomimic/diffusion_unet_hybrid_padp.py:SlidingWindowDiffusionPolicy](PADP/diffusion_policy/policy/robomimic/diffusion_unet_hybrid_padp.py)
 - [ ] **G_algo/PADP/loss_weights.py**
   - 目的:**per-position 加权曲线**(v4 关键修正:从 v3 的 B_model 移过来)
   - 关键:`def padp_loss_weights(horizon, decay, alpha) -> Tensor[H]`
@@ -436,14 +464,20 @@ cd padp-vla
 # 铁律 1: E_cti 无 class
 [ -z "$(grep -rE '^class ' E_cti/)" ] && echo "OK 1" || echo "FAIL 1"
 
-# 铁律 2: B_model 不 import G_algo / E_cti
-[ -z "$(grep -rE 'import G_algo|import E_cti' B_model/)" ] && echo "OK 2" || echo "FAIL 2"
+# 铁律 2: v4 重构后版本
+#   (a) B_model/compose/ 目录不应存在
+[ ! -d B_model/compose ] && echo "OK 2a" || echo "FAIL 2a"
+#   (b) B_model 不 import G_algo / E_cti
+[ -z "$(grep -rE 'import G_algo|import E_cti' B_model/)" ] && echo "OK 2b" || echo "FAIL 2b"
+#   (c) B_model 不含 Policy 类 / 算法专属 buffer
+[ -z "$(grep -rE '@register_policy|class .*Policy\(|sliding.window|alpha_bar|inference_buffer' B_model/)" ] && echo "OK 2c" || echo "FAIL 2c"
 
-# 铁律 3: 数据结构在 A_common/types/
-[ -z "$(grep -rE 'class ActionOutput|class Observation|class State' B_model/ C_sim/ D_real/ E_cti/ G_algo/)" ] && echo "OK 3" || echo "FAIL 3"
+# 铁律 3: 数据结构 + protocol/interface 在 A_common/types/(含 BaseVLAPolicy)
+[ -z "$(grep -rE 'class ActionOutput|class Observation|class State|class BaseVLAPolicy' B_model/ C_sim/ D_real/ E_cti/ G_algo/)" ] && echo "OK 3" || echo "FAIL 3"
+[ -f A_common/types/base_policy.py ] && echo "OK 3b" || echo "FAIL 3b (缺 base_policy.py)"
 
-# B_model 清洁(无 loss / scheduler)
-[ -z "$(grep -rE 'def compute_loss|class.*Loss|DDPMScheduler' B_model/)" ] && echo "OK BM clean" || echo "FAIL BM"
+# B_model 清洁(无 loss / scheduler / Policy 类)
+[ -z "$(grep -rE 'def compute_loss|class.*Loss|DDPMScheduler|@register_policy' B_model/)" ] && echo "OK BM clean" || echo "FAIL BM"
 
 # A_common 不 import B/G/E
 [ -z "$(grep -rE 'import B_model|import G_algo|import E_cti' A_common/ | grep -v TYPE_CHECKING)" ] && echo "OK A clean" || echo "FAIL A"
@@ -507,6 +541,7 @@ pytest A_common/tests/ -v
 
 | 日期 | 修订人 | 内容 |
 |---|---|---|
+| 2026-06-13 | Claude(v4 重构:合掉 B_model/compose) | 锚定 [v4.md](落地方案v4.md) v4 重构版:**B_model 不再含 Policy 类**;`B_model/compose/` 整体迁出(4 文件) → `A_common/types/base_policy.py` + `G_algo/PADP/padp_policy.py` + `G_algo/DP/dp_policy.py` + `G_algo/common/fusion.py`;§0 总进度 60→59;§3.1 types 加 `base_policy.py` + `normalizer_utils.py`;§4.6 compose 整段删除;§8.1 common 加 `position_noise.py` + `fusion.py`;§8.2 DP 加 `dp_policy.py`;§8.3 PADP 加 `padp_policy.py`;§9 7-Layer 验收脚本升级到 2a/2b/2c/3/3b |
 | 2026-06-13 | Claude(60 文件最终版) | 锚定 [v4-1.md 最终版](落地方案v4-1.md) 的 60 文件结构;emoji 维持清理状态;v4-1.1.md 已归档;按 7-Layer + 8 字母文件夹给出逐文件 Todo + PADP/GuidedVLA 引用 |
 | 2026-06-13 | Claude(4 铁律加固) | 在每个 Todo 文件的关键条目上显式标注 4 个铁律的体现位置:铁律 4(C_sim factory)/ 铁律 5(denoise_loop 解耦)/ 铁律 6(时序契约 n_obs_steps/horizon)/ 铁律 7(纯 conda)。完整自检脚本见 [v4-1 执行清单 §10](落地方案v4-1的执行清单.md) |
 | 2026-06-13 | Claude(代码修复 4 bug) | Todo 清单体现的 4 bug 修复(obs_encoder kwarg / n_action_steps / window_exp_gamma / EMA) |

@@ -21,17 +21,17 @@ def build_policy(config: dict):
     """工厂:从 config 字典实例化 policy。
 
     config 格式:
-        {"name": "padp_unet", "kwargs": {"d_h": 512, ...}}
+        {"name": "padp_unet", "horizon": 40, "shape_meta": {...}, ...}
 
-    等价于:
-        _POLICY_REGISTRY["padp_unet"](d_h=512, ...)
+    Policy 注册时签名:`def __init__(self, cfg: dict)`,所以我们把整个 dict
+    当成一个 'cfg' 参数传过去(而不是 unpack kwargs),符合 Fat Policy 设计。
     """
     name = config["name"]
     if name not in _POLICY_REGISTRY:
         raise KeyError(
             f"Unknown policy: {name}. Available: {list_policies()}"
         )
-    return _POLICY_REGISTRY[name](**config.get("kwargs", {}))
+    return _POLICY_REGISTRY[name](config)
 
 
 def list_policies() -> List[str]:

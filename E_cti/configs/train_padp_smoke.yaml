@@ -1,20 +1,15 @@
-# ============================================================
-# DP baseline 训练配置(无位置加权,作对照)
-# 与 train_padp.yaml 相同结构,但 noise_schedule_mode 改为 linear(等价于无位置感知)
-# ============================================================
-
 policy:
-  name: dp_unet
+  name: padp_unet
   shape_meta: ${data.shape_meta}
   horizon: 40
   n_obs_steps: 1
   n_action_steps: 1
   pred_type: sample
-  noise_schedule_mode: linear  # DP baseline:无 position-wise 加权
+  noise_schedule_mode: positionwise
   noise_chunk_size: 1
-  window_loss_weights: constant
-  window_exp_gamma: 0.0
-  window_min_weight: 0.0
+  window_loss_weights: exponential
+  window_exp_gamma: 0.25
+  window_min_weight: 0.02
   crop_shape: [76, 76]
   obs_encoder_group_norm: true
   eval_fixed_crop: true
@@ -32,9 +27,8 @@ policy:
     set_alpha_to_one: true
     steps_offset: 0
     prediction_type: sample
-
 data:
-  n_demo: 200
+  n_demo: 50
   dataset_path: data/robomimic/datasets/square_d0/square_d0_abs.hdf5
   horizon: 40
   n_obs_steps: 1
@@ -43,45 +37,33 @@ data:
   use_legacy_normalizer: false
   shape_meta:
     obs:
-      agentview_image:
-        shape: [3, 84, 84]
-        type: rgb
-      robot0_eye_in_hand_image:
-        shape: [3, 84, 84]
-        type: rgb
-      robot0_eef_pos:
-        shape: [3]
-      robot0_eef_quat:
-        shape: [4]
-      robot0_gripper_qpos:
-        shape: [2]
-    action:
-      shape: [7]
-
+      agentview_image: {shape: [3, 84, 84], type: rgb}
+      robot0_eye_in_hand_image: {shape: [3, 84, 84], type: rgb}
+      robot0_eef_pos: {shape: [3]}
+      robot0_eef_quat: {shape: [4]}
+      robot0_gripper_qpos: {shape: [2]}
+    action: {shape: [7]}
 sim:
   task_name: square_d0
   shape_meta: ${data.shape_meta}
   max_steps: 400
-
 train:
-  num_epochs: 251
+  num_epochs: 2
   batch_size: 64
-  num_workers: 4
+  num_workers: 0
   lr: 1.0e-4
   weight_decay: 1.0e-6
   device: cuda:0
   log_every: 50
-  eval_every: 10
-  ckpt_dir: data/outputs/dp_vla
-  resume: true
+  eval_every: 1
+  ckpt_dir: data/outputs/padp_vla_smoke
+  resume: false
   seed: 42
   use_ema: true
-
 eval:
   n_test: 50
   render: false
-  ckpt_path: data/outputs/dp_vla/latest.ckpt
-
+  ckpt_path: data/outputs/padp_vla_smoke/latest.ckpt
 logging:
   project: padp_vla
-  name: dp_unet_demo200_h40_obs1_a1_linear
+  name: smoke_test

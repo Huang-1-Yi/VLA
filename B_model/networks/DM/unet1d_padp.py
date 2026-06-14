@@ -12,6 +12,8 @@ import torch.nn as nn
 import einops
 from einops.layers.torch import Rearrange
 
+from A_common.types.diffusion_network import DiffusionNetworkInterface
+
 logger = logging.getLogger(__name__)
 
 
@@ -90,7 +92,7 @@ class ConditionalResidualBlock1D(nn.Module):
 
 
 # ============== 1D Conditional UNet(主类) ==============
-class Unet1DPadp(nn.Module):
+class Unet1DPadp(DiffusionNetworkInterface):
     """PADP 风格 1D UNet。
 
     forward(sample, local_cond=None, global_cond=None) -> [B, T, D_a]
@@ -103,6 +105,8 @@ class Unet1DPadp(nn.Module):
                  down_dims=(256, 512, 1024), kernel_size=5, n_groups=8,
                  cond_predict_scale=False):
         super().__init__()
+        self.input_dim = int(input_dim)
+        self.global_cond_dim = int(global_cond_dim) if global_cond_dim is not None else 0
         all_dims = [input_dim] + list(down_dims)
         start_dim = down_dims[0]
 
@@ -216,3 +220,11 @@ class Unet1DPadp(nn.Module):
         x = self.final_conv(x)
         x = einops.rearrange(x, 'b t h -> b h t')
         return x
+
+    def output_shape(self) -> tuple:
+        """返回 sample 输入/输出的最后一维(D_a,)。契约 5 要求。"""
+        return (self.input_dim,)
+
+    def shape_info(self) -> str:
+        """返回 DM 的形状摘要。契约 5 推荐实现。"""
+        return f"sample=({self.input_dim},), global_cond=({self.global_cond_dim},), local_cond=None"
