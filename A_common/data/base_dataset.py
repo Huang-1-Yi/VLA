@@ -127,6 +127,31 @@ class SequenceSampler:
 
 
 class BalancedColumnsSampler:
+    """🚨 消融实验核心类(ABLATION EXPERIMENT CLASS)🚨 —— 不可删,必须先经用户确认 🚨
+
+    本类是 **RTV8 复刻实验的"创新点"实现**,与同文件 `SequenceSampler`
+    构成消融对。**严禁任何形式的删除/重构/合并;任何修改必须先经用户确认**
+    (2026-06-14 用户明令)。
+
+    消融对照表
+    ----------
+      - 实验组: BalancedColumnsSampler(本类,per-epoch 全局映射表 + balanced columns)
+      - 对照组: SequenceSampler(同文件,flat index + DataLoader shuffle)
+
+    详见:
+      - C_sim/robomimic/padp_for_test_dataset.py 顶部"消融对照表"块
+      - C_sim/robomimic/padp_for_test_dataset_no_batch_ep.py 顶部"消融基线"块
+
+    不可删/不可改红线(违反前必须先 @用户确认)
+    -----------------------------------------
+      ❌ 不可删本类
+      ❌ 不可改 `_build_epoch_mapping` 的贪心 argmin + 循环补齐逻辑
+        (这是 RTV8 1:1 复刻的核心,改了就不再"数学逻辑完全一致")
+      ❌ 不可改 `window_nums = real_lens + horizon - 1` 公式
+      ❌ 不可改 `__len__ = batch_size * max_cols`
+      ❌ 不可改 `locate(idx)` 的 p=idx%B / q=idx//B 寻址
+      ❌ 不可合并到 SequenceSampler
+    """
     """RTV8-aligned per-epoch balanced-columns sampler。
 
     ========================================================================

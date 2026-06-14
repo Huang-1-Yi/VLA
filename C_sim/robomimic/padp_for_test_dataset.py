@@ -1,5 +1,64 @@
 """C_sim.robomimic.padp_for_test_dataset —— padp_for_test 专用 RTV8-aligned Dataset。
 
+==========================================================================
+🚨 消融实验文件(ABLATION EXPERIMENT FILE)🚨
+==========================================================================
+
+本文件是 **消融实验"实验组"代码**,与同目录 `_no_batch_ep.py`(消融基线)
+构成一对。**严禁任何形式的删除/重构/合并;任何修改必须先经用户确认**。
+
+消融目的
+--------
+  验证 RTV8-aligned "per-batch 跨 ep 平衡"(BalancedColumnsSampler)对
+  Diffusion Policy 训练效果的贡献度。
+
+消融对照表
+----------
+  ┌─────────┬─────────────────────────────────┬──────────────────────────┐
+  │ 组别     │ 配置                             │ 走的 sampler             │
+  ├─────────┼─────────────────────────────────┼──────────────────────────┤
+  │ 实验组   │ 本文件 + balanced_sampler=True  │ BalancedColumnsSampler   │
+  │         │                                  │ (行内强制不同 ep)        │
+  │ 对照组 1 │ 本文件 + balanced_sampler=False │ SequenceSampler          │
+  │         │                                  │ (flat index + DataLoader │
+  │         │                                  │  shuffle)                │
+  │ 对照组 2 │ 切到 _no_batch_ep.py 导入       │ SequenceSampler          │
+  │ (基线)  │ (字节级等价于对照组 1,           │ (独立 class 快照)        │
+  │         │  作 sanity check)                │                          │
+  └─────────┴─────────────────────────────────┴──────────────────────────┘
+
+TODO 清单(实验待跑)
+-------------------
+  [ ] 跑实验组:   balanced_sampler=True, 记录 test_mean_score
+  [ ] 跑对照组 1: balanced_sampler=False, 记录 test_mean_score
+  [ ] 跑对照组 2: import 切到 _no_batch_ep.py,记录 test_mean_score
+  [ ] 三组差异 < 0.5% →  消融无显著影响(论文可写"balanced sampler 不影响")
+  [ ] 三组差异 > 2%   →  balanced sampler 是必要设计(论文可写"创新点")
+  [ ] 同时记录 train_loss 曲线、sample entropy、gradient norm
+  [ ] 跑 3 个不同 seed(42 / 123 / 2024)取均值
+
+不可删/不可改红线(违反前必须先 @用户确认)
+-----------------------------------------
+  ❌ 不可删 `balanced_sampler` / `batch_size` / `sampler_seed` 三个参数
+  ❌ 不可删 `set_epoch()` 方法
+  ❌ 不可删 `balanced_sampler` / `batch_size` 两个 @property
+  ❌ 不可删 `if self._balanced_sampler:` 分支(否则 balanced 模式失效)
+  ❌ 不可删 `_no_batch_ep.py`(对照组)
+  ❌ 不可改 window_nums 公式(real_lens + horizon - 1,已与 RTV8 对齐)
+  ❌ 不可改 __getitem__ 中 `self.sampler.locate(idx)` 调用接口
+  ❌ 不可改 get_normalizer 的 10D 逐维 max_abs scale 公式
+
+相关文件
+--------
+  - C_sim/robomimic/padp_for_test_dataset_no_batch_ep.py   (消融基线)
+  - A_common/data/base_dataset.py::BalancedColumnsSampler  (sampler 实现)
+  - A_common/data/base_dataset.py::SequenceSampler         (对照组 sampler)
+  - E_cti/train/verify_balanced_sampler.py                  (4 项验证脚本)
+  - E_cti/train/padp_for_test_train.py                      (训练入口)
+  - E_cti/configs/padp_for_test_golden.yaml                 (yaml 配置)
+==========================================================================
+
+
 > **为什么新增?** VLA 现有 `RobomimicZarrDatasetPadp` 用了 zarr v3 API (`create_array`),
 > 本环境装的是 zarr 2.12,只有 v2 API (`create_dataset`)。直接调现有 dataset 会
 > `AttributeError: 'Group' object has no attribute 'create_array'`。

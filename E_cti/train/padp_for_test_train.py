@@ -426,12 +426,31 @@ def main():
                     optim.param_groups[0]["lr"])
         history.append((epoch, avg))
 
+        # === 9.5.  ROLLOUT (server + client 模式) ===
+        # 仿源端 PADP train_padp_workspace_v3.run() 第 696-718 行的 rollout 段。
+        # 源端是 in-process 的 env_runner.run(policy);本文件按用户的指引
+        # 拆成 server (policy) + client (env) 两个独立进程,通过 TCP+JSON 协议交互。
+        # **交互逻辑当前是 TODO**:实际数据序列化 / 多相机编码 / 错误重试 等细节
+        # 在与用户确认后再补,本文件先用最简单的 stub 跑通 pipeline。
+        rollout_cfg = cfg.get("rollout", {}) if isinstance(cfg, dict) else {}
+        if (not train_cfg.get("skip_rollout", True)) and rollout_cfg.get("enabled", False) \
+                and (epoch % int(rollout_cfg.get("rollout_every", 1)) == 0):
+            from E_cti.train.padp_for_test_rollout import run_rollout_via_server_client
+            test_mean_score = run_rollout_via_server_client(
+                policy=policy, ema=ema, cfg=cfg, epoch=epoch,
+            )
+            history.append((epoch, avg, test_mean_score))
+            logger.info("Epoch %d ROLLOUT: test_mean_score=%s", epoch, test_mean_score)
+
         # === 10. 保存 latest ckpt + normalizer ===
         ckpt_payload = {
             "model_state": policy.state_dict(),
             "optim_state": optim.state_dict(),
             "epoch": epoch,
             "train_loss": avg,
+            # 🚧 同时把 normalizer 嵌进 ckpt,方便 server/client 直接加载
+            # (不必再去 load normalizer.pt 路径,见 rollout 流程)
+            "normalizer_state": policy._normalizer.state_dict() if policy._normalizer is not None else None,
         }
         if ema is not None:
             ckpt_payload["ema_state"] = ema.state_dict()

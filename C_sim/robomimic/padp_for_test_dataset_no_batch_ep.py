@@ -1,5 +1,62 @@
 """C_sim.robomimic.padp_for_test_dataset_no_batch_ep —— 【消融基线】无 batch 跨 ep 平衡的版本。
 
+==========================================================================
+🚨 消融实验基线(ABLATION BASELINE)🚨 —— 不可删,必须先经用户确认 🚨
+==========================================================================
+
+本文件是 **永久 ablation baseline 快照**,与同目录
+`padp_for_test_dataset.py`(实验组)构成消融对。
+
+本文件作为 baseline 永久保留,任何情况下都不得删除/重构/合并;
+任何修改前必须先 @用户确认(2026-06-14 用户明令)。
+
+消融对照表
+----------
+  ┌─────────┬─────────────────────────────────┬──────────────────────────┐
+  │ 组别     │ 配置                             │ 走的 sampler             │
+  ├─────────┼─────────────────────────────────┼──────────────────────────┤
+  │ 实验组   │ padp_for_test_dataset.py        │ BalancedColumnsSampler   │
+  │         │ + balanced_sampler=True         │ (行内强制不同 ep)        │
+  │ 对照组 1 │ padp_for_test_dataset.py        │ SequenceSampler          │
+  │         │ + balanced_sampler=False        │ (与本文件字节级等价)     │
+  │ 对照组 2 │ 本文件 (NoBatchEp class)        │ SequenceSampler          │
+  │ (基线)  │                                  │ (独立 class 快照)        │
+  └─────────┴─────────────────────────────────┴──────────────────────────┘
+
+TODO 清单(实验待跑)
+-------------------
+  [ ] 跑实验组:   padp_for_test_dataset.py + balanced_sampler=True
+  [ ] 跑对照组 1: padp_for_test_dataset.py + balanced_sampler=False
+  [ ] 跑对照组 2: import 本文件 NoBatchEp 类
+  [ ] 三组差异 < 0.5% →  消融无显著影响
+  [ ] 三组差异 > 2%   →  balanced sampler 是必要设计
+  [ ] 三个不同 seed(42 / 123 / 2024)取均值
+  [ ] 对照组 1 vs 对照组 2 应**完全字节级等价**(sanity check)
+
+不可删/不可改红线(违反前必须先 @用户确认)
+-----------------------------------------
+  ❌ 不可删本文件(任何时候都不删,不允许任何理由)
+  ❌ 不可改 class 名 `RobomimicZarrDatasetPadpForTestNoBatchEp`
+  ❌ 不可改 `__init__` 签名(不得加 balanced_sampler / batch_size / sampler_seed)
+  ❌ 不可加 `set_epoch()` 方法
+  ❌ 不可加 `balanced_sampler` / `batch_size` @property
+  ❌ 不可合并到 `padp_for_test_dataset.py`
+  ❌ 不可改 window_nums 公式(real_lens + horizon - 1)
+  ❌ 不可改 __getitem__ / get_normalizer 的数值(必须与对照组 1 字节级一致)
+
+如果 reviewer 说"这个文件没人用,删了吧",请回:
+  "这是消融实验的永久 baseline 快照,删除需要先经用户(@user)确认,
+  见文件顶部 '🚨 消融实验基线' 块。"
+
+相关文件
+--------
+  - C_sim/robomimic/padp_for_test_dataset.py                  (实验组,含本文件镜像)
+  - A_common/data/base_dataset.py::BalancedColumnsSampler    (实验组 sampler)
+  - A_common/data/base_dataset.py::SequenceSampler           (本文件用的 sampler)
+  - E_cti/train/verify_balanced_sampler.py                   (4 项验证脚本,第 3 项
+                                                                专门验证本文件 vs
+                                                                对照组 1 字节级一致)
+==========================================================================
 ================================================================================
 🧪 消融实验专用(ABLATION BASELINE)
 ================================================================================
