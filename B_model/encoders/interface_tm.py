@@ -1,6 +1,6 @@
-"""契约 4:TimestepEncoderInterface —— TM(扩散时间步编码器)统一接口。
+"""契约 4:TimestepEncoderInterface —— TM 抽象契约。
 
-铁律 3:本抽象类必须放在 A_common/types/。
+v5-1 §13 现行规范:每个 interface 单文件,最细粒度。
 """
 from abc import abstractmethod
 import torch
@@ -11,7 +11,7 @@ class TimestepEncoderInterface(nn.Module):
     """扩散时间步编码器。"""
 
     def __init__(self):
-        super().__init__()()
+        super().__init__()
 
     @abstractmethod
     def forward(self, t: torch.Tensor) -> torch.Tensor:

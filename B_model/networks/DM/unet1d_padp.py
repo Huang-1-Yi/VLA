@@ -12,7 +12,7 @@ import torch.nn as nn
 import einops
 from einops.layers.torch import Rearrange
 
-from A_common.types.diffusion_network import DiffusionNetworkInterface
+from B_model.networks.interface_dm import DiffusionNetworkInterface
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +183,13 @@ class Unet1DPadp(DiffusionNetworkInterface):
         global_cond:[B, D_g] or None
         return:     [B, T, D_a]
         """
+        # === L1a 形状契约(代码注释,不在 docstring 里)===
+        # ===   sample.input  (B, T_pred, D_a)  ;D_a = self.input_dim(默认 7)===
+        # ===   sample.output (B, T_pred, D_a)  ;输出与 sample 同 shape===
+        # ===   global_cond    (B, D_g)         ;D_g = self.global_cond_dim(默认 512)===
+        # ===   local_cond      (B, T_pred, D_l) ;D_l = self.local_cond_dim(阶段 1 不用)===
+        # ===   内部 down_dims = (256, 512, 1024) ;3 层下采样,下采样率 2**3 = 8===
+        # ===   重要:Policy.forward 必须把 Adapter 输出 (B, T_obs, Dproj) 沿 T 维 mean pool 成 (B, Dproj) 再传进来===
         sample = einops.rearrange(sample, 'b h t -> b t h')
 
         if global_cond is None:

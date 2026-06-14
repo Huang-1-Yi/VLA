@@ -48,7 +48,7 @@
 | §9 A_common/tests | 9 | 0 | 0/9 |
 | §10 B_model/encoders/VM | 3 | 0 | 0/3 |
 | §11 B_model/encoders/AM | 3 | 0 | 0/3 |
-| §12 B_model/encoders/TM | 3 | 0 | 0/3 |
+| §12 B_model/networks/TM | 3 | 0 | 0/3 |
 | §13 B_model/networks/DM | 3 | 0 | 0/3 |
 | §14 B_model/adapters | 4 | 0 | 0/4 |
 | §15 C_sim/robomimic | 7 | 0 | 0/7 |
@@ -464,14 +464,14 @@
 
 ---
 
-## §12. B_model/encoders/TM/(3 个文件)
+## §12. B_model/networks/TM/(3 个文件)
 
-- [ ] **`B_model/encoders/TM/__init__.py`** — TM 模块入口
+- [ ] **`B_model/networks/TM/__init__.py`** — TM 模块入口
   - **目的**:暴露 `build_timestep_encoder(cfg) -> TimestepEncoderInterface`
   - **关键实现点**:`_REGISTRY = {"sinusoidal": SinusoidalTimestepEncoder}`
   - **源**:自创
 
-- [ ] **`B_model/encoders/TM/sinusoidal.py`** — `SinusoidalTimestepEncoder`
+- [ ] **`B_model/networks/TM/sinusoidal.py`** — `SinusoidalTimestepEncoder`
   - **目的**:Sinusoidal 位置编码 + MLP
   - **关键实现点**:
     ```python
@@ -488,9 +488,9 @@
         def output_shape(self): return (self.d_h,)
     ```
   - **源**:抄 PADP diffusion_policy/model/diffusion/positional_embedding.py
-  - **注意点**:`SinusoidalPosEmb` **inline 到本文件**(避免 B_model 跨文件依赖)
+  - **注意点**:`SinusoidalPosEmb` **inline 到本文件**(避免 B_model 跨文件依赖);**TM 归 B_model/networks/ 不归 B_model/encoders/**(因为它处理的是扩散时间步,不是 lerobot 传感器 obs)
 
-- [ ] **`B_model/encoders/TM/extra_placeholder.py`** — *(同上备注,实际可省)*
+- [ ] **`B_model/networks/TM/extra_placeholder.py`** — *(同上备注,实际可省)*
   - **状态**:TM 阶段 1 实际只需 2 个文件
 
 ---

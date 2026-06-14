@@ -1,6 +1,6 @@
-"""契约 5:DiffusionNetworkInterface —— DM(动作去噪网络)统一接口。
+"""契约 5:DiffusionNetworkInterface —— DM 抽象契约。
 
-铁律 3:本抽象类必须放在 A_common/types/。
+v5-1 §13 现行规范:每个 interface 单文件,最细粒度。
 """
 from abc import abstractmethod
 import torch
@@ -15,7 +15,7 @@ class DiffusionNetworkInterface(nn.Module):
 
     def __init__(self):
         super().__init__()
-        # 子类继续:接收 input_dim / global_cond_dim / local_cond_dim 等参数,实例化 UNet / Transformer
+        # 子类继续:接收 input_dim / global_cond_dim / local_cond_dim 等参数
 
     @abstractmethod
     def forward(self, sample: torch.Tensor, **cond) -> torch.Tensor:
@@ -28,5 +28,5 @@ class DiffusionNetworkInterface(nn.Module):
         raise NotImplementedError
 
     def shape_info(self) -> str:
-        """返回 DM 的形状摘要字符串,供调试时 __init__ 末尾 logger.info(...) 用。"""
+        """返回 DM 的形状摘要字符串,供调试用。"""
         return f"sample=({self.output_shape()[-1]},)"

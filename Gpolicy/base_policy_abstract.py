@@ -1,13 +1,14 @@
-"""契约 6:BasePolicy —— 策略大脑(Fat Policy)统一基类。
+# -*- coding: utf-8 -*-
+"""BasePolicy —— 策略大脑(Fat Policy)统一基类。
 
-铁律 3:本抽象类必须放在 A_common/types/。
-Fat Policy 设计:
-  - 子类 __init__ 实例化 Adapter + TM + DM
-  - 子类 __init__ 一次性实例化 self.train_scheduler / self.infer_scheduler(若适用)
-  - 子类 __init__ 缓存 self.horizon / self.action_dim
-  - 子类暴露 3 个必须方法:forward + compute_loss + predict_action
+v5-1 偏离版:从 A_common/types/base_policy.py 整体迁来,跟消费者
+Gpolicy.PADP.padp_policy / Gpolicy.DP.dp_policy 同包,便于阅读和 IDE 跳转。
 
-E_cti 只通过这个接口和整个系统交互。
+Gpolicy/__init__.py 通过 re-export 把这个接口暴露成
+`from Gpolicy import BasePolicy` 这种最自然的写法。
+
+继承 _apply 修复:policy.to(device) 时 normalizer 也会同步搬动(避免
+normalizer 留在 CPU 而 model 跑到 GPU 引发 device mismatch)。
 """
 from abc import abstractmethod
 import torch
@@ -23,6 +24,8 @@ class BasePolicy(nn.Module):
 
     def __init__(self):
         super().__init__()
+        # 用 object.__setattr__ 让 _normalizer 不被 nn.Module 当成子模块
+        # (避免 normalizer 进 state_dict、避免 .to(device) 时漏搬)
         object.__setattr__(self, "_normalizer", None)
 
     def _apply(self, fn, recurse=True):

@@ -29,7 +29,7 @@ from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 
 from A_common.logger import get_logger
 from A_common.registry.policy_registry import register_policy
-from A_common.types.base_policy import BasePolicy
+from Gpolicy import BasePolicy
 from A_common.types.action_output import ActionOutput
 from B_model.adapters.padp_adapter import PADPAdapter
 from B_model.networks.DM.unet1d_padp import Unet1DPadp
@@ -87,12 +87,21 @@ class SlidingWindowDiffusionPolicy(BasePolicy):
         task_name = cfg.get("task_name", "square")
 
         # ===== 算力零件装配(v5:Fat Policy 实例化 B_model 组件)=====
-        self.adapter = PADPAdapter(
+        # v5-1 简化:VM 单图 + Adapter 负责多相机/多时间步
+        from B_model.encoders.VM.robomimic_obs_encoder import RobomimicObsEncoder
+        vm = RobomimicObsEncoder(
             shape_meta=shape_meta,
             crop_shape=crop_shape,
             obs_encoder_group_norm=obs_encoder_group_norm,
             eval_fixed_crop=eval_fixed_crop,
             task_name=task_name,
+        )
+        # 阶段 1 暂不启用 AM(直传 low-dim 给 Adapter)
+        self.adapter = PADPAdapter(
+            shape_meta=shape_meta,
+            vm_encoder=vm,
+            am_encoder=None,
+            proj_dim=512,
         )
 
         # global_cond_dim = obs_feature_dim * n_obs_steps
@@ -196,12 +205,9 @@ class SlidingWindowDiffusionPolicy(BasePolicy):
             k: (v[:, :self.n_obs_steps, ...].reshape(-1, *v.shape[2:]) if v.dim() >= 4 else v[:, :self.n_obs_steps, ...].reshape(B, -1))
             for k, v in nobs.items()
         }
-        nobs_features = self.adapter(this_obs)        # [B*n_obs, D_obs]
-        # 兼容 dict 与 Tensor 输入
-        if isinstance(nobs_features, dict):
-            # concat 所有特征(robomimic 多模态情形)
-            nobs_features = torch.cat([v for v in nobs_features.values()], dim=-1)
-        global_cond = nobs_features.reshape(B, -1)   # [B, n_obs * D_obs]
+        # v5-1:Adapter 已内部沿 batch 维 cat 完多相机/多时间步,输出 (B, T*proj_dim)
+        # 这里不再二次 reshape(直接拿到 B, T*proj_dim 作为 global_cond)
+        global_cond = self.adapter(this_obs)            # [B, T*proj_dim]
 
         # Position-aware 加噪
         noise = torch.randn_like(nactions)

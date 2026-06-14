@@ -28,12 +28,28 @@ def make_env(cfg: dict) -> Callable:
 
 
 def make_dataset(cfg: dict):
-    """构造 BaseVLADataset 实例。"""
-    from C_sim.robomimic.zarr_dataset import RobomimicZarrDataset
+    """构造 BaseVLADataset 实例。
 
-    sim = cfg.get("sim", {})
+    通过 `data.dataset_impl` 切换实现:
+      - 'padp'  (默认,RTV8 对齐):RobomimicZarrDatasetPadp
+            - action 7D → 10D(axis_angle→6D)
+            - __getitem__ 返回 {obs, action, window_info} dict
+            - window_nums = real_len + horizon - 1
+      - 'legacy' (7D 旧版):RobomimicZarrDataset
+            - 保持 axis_angle,不转换
+            - __getitem__ 返回 (obs_dict, action) tuple
+    """
+    impl = (cfg.get("data", {}).get("dataset_impl", "padp")).lower()
+    if impl == "legacy":
+        from C_sim.robomimic.zarr_dataset import RobomimicZarrDataset
+        Cls = RobomimicZarrDataset
+    else:
+        # 默认走 RTV8 对齐版
+        from C_sim.robomimic.zarr_dataset_padp import RobomimicZarrDatasetPadp
+        Cls = RobomimicZarrDatasetPadp
+
     data = cfg["data"]
-    return RobomimicZarrDataset(
+    return Cls(
         shape_meta=data["shape_meta"],
         dataset_path=data["dataset_path"],
         n_demo=data.get("n_demo", 200),
