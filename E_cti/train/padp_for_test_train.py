@@ -652,10 +652,6 @@ def main():
                     f"{test_mean_score:.4f}" if test_mean_score is not None else "None(rollout没跑)",
                     phase,
                     " + topk/score" if test_mean_score is not None else " only")
-        logger.info("[TopK] epoch=%d loss=%.4f score=%s phase=%s (topk/loss + topk/score)",
-                    epoch, avg,
-                    f"{test_mean_score:.4f}" if test_mean_score is not None else "None",
-                    phase)
 
     # === 12. 训练结束报告 (双 TopK) ===
     best_loss, best_loss_epoch, best_loss_path = loss_topk.best()
