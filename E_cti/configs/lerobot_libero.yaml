@@ -98,7 +98,7 @@ train:
   ckpt_dir: data/outputs/v1.2_lerobot_libero7d
   resume: False
   seed: 42
-  skip_rollout: True        # v1.2 默认不开 rollout(smoke test)
+  skip_rollout: False       # v1.3 启用 sim rollout
   loss_threshold: 0.01
   loss_topk:
     k: 3
@@ -108,15 +108,19 @@ train:
     format_str: "epoch{epoch:03d}_score{test_mean_score:.4f}.ckpt"
 
 rollout:
-  enabled: False             # v1.2 smoke test 阶段禁用
+  enabled: True              # v1.3 启用 sim rollout
   n_train: 2
-  n_test: 4
+  n_test: 4                 # v1.3.1:全统一
   max_steps: 400
-  interval: 5
-  first_epoch: 5
+  interval: 5                # v1.3.1:全统一
+  first_epoch: 5            # v1.3.1:全统一
   abs_action: True
+  action_dim: 7             # v1.3:lerobot 7D axis_angle (vs v1.1 10D rot6d)
   task_name: ${policy.task_name}
   test_start_seed: 10000
+  # v1.3: 转发到 client,让 robomimic sim 包装为 LerobotRobomimicEnv
+  use_lerobot_env: True
+  hdf5_for_init_states: VLA/data/robomimic/datasets/square_d0/square_d0_abs.hdf5
   server:
     host: 127.0.0.1
     port: 8765

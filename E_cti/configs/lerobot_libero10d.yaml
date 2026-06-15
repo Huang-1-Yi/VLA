@@ -98,8 +98,8 @@ train:
   ckpt_dir: data/outputs/v1.2_lerobot_libero10d
   resume: False
   seed: 42
-  skip_rollout: True        # 短训不开 rollout, 留 v1.3 单独测 sim rollout
-  loss_threshold: 0.1        # 10D loss 跌得快, 几 epoch 即可达 0.1 之下
+  skip_rollout: False       # v1.3.1:生产启用 (跟其他 3 个 config 一致)
+  loss_threshold: 0.01       # v1.3.1:全统一,Phase 2 gate 用 0.01
   loss_topk:
     k: 3
     format_str: "epoch{epoch:03d}_loss{train_loss:.4f}.ckpt"
@@ -108,13 +108,17 @@ train:
     format_str: "epoch{epoch:03d}_score{test_mean_score:.4f}.ckpt"
 
 rollout:
-  enabled: False             # 短训阶段禁用, v1.3 Method C 单独跑
+  enabled: True              # v1.3.1:生产启用
   n_train: 2
   n_test: 4
   max_steps: 400
   interval: 5
   first_epoch: 5
   abs_action: True
+  # v1.3.1:10D rot6d 跟 7D 一致,补 lerobot env keys
+  action_dim: 10
+  use_lerobot_env: True
+  hdf5_for_init_states: VLA/data/robomimic/datasets/square_d0/square_d0_abs.hdf5
   task_name: ${policy.task_name}
   test_start_seed: 10000
   server:

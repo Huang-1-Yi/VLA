@@ -129,7 +129,7 @@ train:
   seed: 42
 
   # 跳过 rollout(用户明确要求)
-  skip_rollout: true
+  skip_rollout: false
   # TopK ckpt 策略 (跟 v1.1 train 期望的新字段命名)
   loss_topk:
     k: 5
@@ -141,9 +141,11 @@ train:
 
 # ---------- Rollout (server+client 模式,源端 v3 黄金配置) ----------
 rollout:
-  enabled: false                       # 与 skip_rollout 至少有一个为 false
-  rollout_every: 1                     # 每 N epoch 跑一次 rollout(源端 v3:1000/n_demo=5)
-  n_test: 3                            # 跑 N 个测试 episode
+  enabled: true                        # v1.3.1:生产启用
+  interval: 5                          # v1.3.1:每 5 epoch 跑一次 (替换 dead rollout_every)
+  first_epoch: 5                       # v1.3.1:从 epoch 5 开始
+  n_train: 2                           # v1.3.1:全统一
+  n_test: 4                            # 跑 N 个测试 episode
   max_steps: 400                       # 单 episode 最长步数
   server:
     host: 127.0.0.1

@@ -98,8 +98,8 @@ train:
   ckpt_dir: data/outputs/v1.2_lerobot_libero7d
   resume: False
   seed: 42
-  skip_rollout: True        # v1.2 默认不开 rollout(smoke test)
-  loss_threshold: 0.01
+  skip_rollout: False       # v1.3.1:生产启用 (跟其他 3 个 config 一致)
+  loss_threshold: 0.01       # v1.3.1:全统一,Phase 2 gate 用 0.01
   loss_topk:
     k: 3
     format_str: "epoch{epoch:03d}_loss{train_loss:.4f}.ckpt"
@@ -108,7 +108,7 @@ train:
     format_str: "epoch{epoch:03d}_score{test_mean_score:.4f}.ckpt"
 
 rollout:
-  enabled: False             # v1.2 smoke test 阶段禁用
+  enabled: True              # v1.3.1:生产启用
   n_train: 2
   n_test: 4
   max_steps: 400

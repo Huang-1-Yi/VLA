@@ -545,6 +545,9 @@ def main():
 
     global_step = 0
     history = []  # 记录每 epoch 的 train_loss,用于 TopK
+    # v1.3.1:sticky phase2 标志 — 一旦 avg_loss < loss_threshold 永不再回退,
+    # 避免 loss 在 threshold 附近波动导致 rollout 时有时无
+    phase2_activated = False
     for epoch in range(start_epoch, train_cfg["num_epochs"]):
         # ====== balanced_sampler: 每 epoch 重建 _global_mapping(per-epoch 洗牌) ======
         if use_balanced:
@@ -598,15 +601,22 @@ def main():
         #   5. (epoch - first_epoch) % interval == 0
         test_mean_score = None
         loss_threshold = train_cfg.get("loss_threshold", 0.01)
+        # v1.3.1:sticky phase2 gate — 一旦 avg < loss_threshold 锁住, 永不再回退
+        if not phase2_activated and avg < loss_threshold:
+            phase2_activated = True
+            logger.info(
+                "[Phase2] epoch=%d 激活 Phase 2 (loss=%.4f < threshold=%.4f, sticky 永不再回退)",
+                epoch, avg, loss_threshold,
+            )
         do_rollout = (
             rollout_cfg.get("enabled", False)
             and not train_cfg.get("skip_rollout", False)
-            and avg < loss_threshold  # ⭐ 关键:loss < threshold 才会触发 rollout
+            and phase2_activated  # ⭐ sticky: 一旦激活永不再回退 (避免 0.01 附近波动)
             and epoch >= int(rollout_cfg.get("first_epoch", 0))
             and ((epoch - int(rollout_cfg.get("first_epoch", 0)))
                  % int(rollout_cfg.get("interval", 1)) == 0)
         )
-        if avg >= loss_threshold and rollout_cfg.get("enabled", False) \
+        if not phase2_activated and rollout_cfg.get("enabled", False) \
                 and not train_cfg.get("skip_rollout", False) \
                 and epoch >= int(rollout_cfg.get("first_epoch", 0)):
             logger.info("[Rollout] epoch=%d 跳过(Phase 1: loss=%.4f >= threshold=%.4f,等 loss 跌穿再触发)",

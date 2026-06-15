@@ -92,7 +92,12 @@ def run_rollout_via_server_client(policy, ema, cfg, epoch) -> float:
     # === 2. Spawn server (policy) ===
     server_proc = None
     if server_cfg.get("spawn", True):
-        server_script = _VLA_ROOT / "E_cti/train/padp_for_test_server.py"
+        # v1.3: lerobot 路径用 monkey-patch 入口 (padp_for_libero_server.py)
+        #       否则 server 加载的 encoder 不认 lerobot dot-key obs,起不来
+        if rollout_cfg.get("use_lerobot_env", False):
+            server_script = _VLA_ROOT / "E_cti/train/padp_for_libero_server.py"
+        else:
+            server_script = _VLA_ROOT / "E_cti/train/padp_for_test_server.py"
         server_log = tmp_ckpt_dir / f"server_epoch{epoch:03d}.log"
         # 消融开关:server 是否在 EP_CHANGE 时真 reset
         server_reset_flag = str(rollout_cfg.get("server_reset_on_ep_change", True)).lower()
@@ -132,6 +137,15 @@ def run_rollout_via_server_client(policy, ema, cfg, epoch) -> float:
                 "--n_test", str(n_test),
                 "--max_steps", str(max_steps),
             ]
+            # v1.3: lerobot env wiring (forward to client)
+            if rollout_cfg.get("use_lerobot_env", False):
+                client_cmd += ["--use_lerobot_env"]
+                hdf5_init = rollout_cfg.get("hdf5_for_init_states")
+                if hdf5_init:
+                    client_cmd += ["--hdf5_for_init_states", str(hdf5_init)]
+                # lerobot 训练常用 7D axis_angle (vs v1.1 10D rot6d)
+                action_dim = int(rollout_cfg.get("action_dim", 7))
+                client_cmd += ["--action_dim", str(action_dim)]
             client_proc = subprocess.run(
                 client_cmd,
                 stdout=open(client_log, "w"), stderr=subprocess.STDOUT,
@@ -162,6 +176,10 @@ def run_rollout_via_server_client(policy, ema, cfg, epoch) -> float:
                 n_train=int(rollout_cfg.get("n_train", 2)),
                 n_test=n_test, max_steps=max_steps,
                 abs_action=bool(rollout_cfg.get("abs_action", True)),
+                action_dim=int(rollout_cfg.get("action_dim", 10)),
+                # v1.3: lerobot env wiring
+                use_lerobot_env=bool(rollout_cfg.get("use_lerobot_env", False)),
+                hdf5_for_init_states=rollout_cfg.get("hdf5_for_init_states"),
             )
             client.connect()
             try:
