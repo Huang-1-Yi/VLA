@@ -1,6 +1,6 @@
 # ============================================================
-# PADP-VLA v1.0
-# 1.0 版本,可训练 PADP 但无 rollout
+# PADP-VLA v1.1
+# 1.1 版本,补 rollout + best-ckpt by test_mean_score (max)
 # ============================================================
 
 """铁律 6:BaseVLADataset 显式声明 n_obs_steps 与 horizon。"""

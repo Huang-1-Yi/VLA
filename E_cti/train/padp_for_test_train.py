@@ -1,6 +1,6 @@
 # ============================================================
-# PADP-VLA v1.0
-# 1.0 版本,可训练 PADP 但无 rollout
+# PADP-VLA v1.1
+# 1.1 版本,补 rollout + best-ckpt by test_mean_score (max)
 # ============================================================
 
 """E_cti.train.padp_for_test_train —— VLA 端 1:1 复刻 PADP_v3 黄金命令训练效果。
@@ -121,6 +121,7 @@ from A_common.logger import get_logger
 from A_common.registry.policy_registry import build_policy
 from A_common.data.base_collator import base_collate
 from A_common.ckpt.ema import EMAModel
+from E_cti.train.padp_for_test_score_topk import ScoreTopKManager, LossTopKManager
 
 logger = get_logger("padp_for_test_train")
 
@@ -211,17 +212,45 @@ DEFAULT_CONFIG = {
         },
         "no_grad_clip": True,      # 源端
         "ckpt_dir": "data/outputs/padp_for_test_golden",
-        "resume": True,
+        "resume": False, # True,
         "seed": 42,
-        "skip_rollout": True,
-        "ckpt_topk": {
-            "monitor_key": "train_loss",
-            "mode": "min",
-            "k": 5,
+        "skip_rollout": False,     # v1.1 改为 False(启用 rollout)
+        # v1.1 pre-release:双阶段 TopK
+        #   - Phase 1 (loss 阶段): train_loss >= loss_threshold
+        #       用 LossTopKManager 选 top-k by train_loss (min)
+        #   - Phase 2 (score 阶段): train_loss < loss_threshold
+        #       用 ScoreTopKManager 选 top-k by test_mean_score (max)
+        "loss_threshold": 0.01,
+        "loss_topk": {
+            "k": 3,
             "format_str": "epoch{epoch:03d}_loss{train_loss:.4f}.ckpt",
         },
+        "score_topk": {
+            "k": 3,
+            "format_str": "epoch{epoch:03d}_score{test_mean_score:.4f}.ckpt",
+        },
     },
-    "rollout": {"enabled": False},
+    "rollout": {
+        "enabled": True,
+        "n_train": 2,
+        "n_test": 4,
+        "max_steps": 400,
+        "interval": 5,             # v1.1.1 pre-release:每 5 epoch 判定一次(默认)
+        "first_epoch": 5,         # 同时设小,允许早期进 Phase 2
+        "abs_action": True,
+        "task_name": "${policy.task_name}",
+        "test_start_seed": 10000,
+        "server": {
+            "host": "127.0.0.1",
+            "port": 8765,
+            "spawn": True,
+            "wait_timeout_sec": 60,
+        },
+        "client": {
+            "spawn": True,
+        },
+        "client_timeout_sec": 600,
+    },
     "logging": {
         "project": "padp_vla_for_test",
         "name": "padp_golden_standard_h40_obs1_a1_gamma025",
@@ -273,47 +302,10 @@ def make_cosine_with_warmup(optimizer, num_warmup_steps, num_training_steps,
 
 
 # ====================================================================
-# TopK checkpoint manager (按 train_loss 升序保存最优 k 个)
-# 源端 TopKCheckpointManager 按 test_mean_score 降序,本文件反转过来。
+# v1.1:TopK manager 已迁移到独立文件 E_cti/train/padp_for_test_score_topk.py
+# (按 test_mean_score max 选 best ckpt,删除分数更低的旧 ckpt)
+# 这里不再保留 LossTopKManager(train_loss min) — v1.0 行为已被废弃。
 # ====================================================================
-class LossTopKManager:
-    """轻量 TopK ckpt manager:保留 train_loss 最低的 k 个 ckpt。"""
-
-    def __init__(self, save_dir: Path, k: int = 5, format_str: str = "epoch{epoch:03d}_loss{train_loss:.4f}.ckpt"):
-        self.save_dir = Path(save_dir)
-        self.save_dir.mkdir(parents=True, exist_ok=True)
-        self.k = int(k)
-        self.format_str = format_str
-        # 维护一个最小堆,[(loss, path)]
-        self.heap = []  # list of (loss, path)
-
-    def try_save(self, epoch: int, train_loss: float, payload: dict) -> bool:
-        """若 train_loss 排进前 k 最小,则保存并返回 True。"""
-        if len(self.heap) < self.k:
-            should_save = True
-        else:
-            # heap[0] 是当前最大 loss
-            worst_loss = max(h[0] for h in self.heap)
-            should_save = train_loss < worst_loss
-
-        if not should_save:
-            return False
-
-        ckpt_path = self.save_dir / self.format_str.format(epoch=epoch, train_loss=train_loss)
-        torch.save(payload, ckpt_path)
-        logger.info("[TopK] Saved ckpt to %s (loss=%.6f)", ckpt_path, train_loss)
-        self.heap.append((train_loss, str(ckpt_path)))
-        # 若超出 k 个,删掉最差
-        if len(self.heap) > self.k:
-            self.heap.sort(key=lambda x: x[0])  # 升序
-            self.heap.pop()  # 删最大
-        return True
-
-    def best(self):
-        if not self.heap:
-            return None, None
-        sorted_h = sorted(self.heap, key=lambda x: x[0])
-        return sorted_h[0]  # (最小 loss, path)
 
 
 # ====================================================================
@@ -324,7 +316,23 @@ def main():
     parser.add_argument("--config", type=str, default=None,
                         help="可选:从 yaml 文件覆盖默认配置(不传则用嵌入的默认配置)")
     parser.add_argument("--max_epochs", type=int, default=None,
-                        help="覆盖 config 里的 num_epochs(用于 smoke test)")
+                        help="覆盖 num_epochs(用于 smoke test)")
+    # v1.1:rollout 相关 CLI args
+    parser.add_argument("--no_rollout", action="store_true",
+                        help="禁用 rollout(只走 loss-driven Phase 1)")
+    parser.add_argument("--rollout_interval", type=int, default=None,
+                        help="覆盖 rollout.interval(每 N epoch 判定一次是否要跑 rollout)")
+    parser.add_argument("--n_test_rollout", type=int, default=None,
+                        help="覆盖 rollout.n_test(测试 episode 数)")
+    parser.add_argument("--rollout_port", type=int, default=None,
+                        help="覆盖 rollout.server.port")
+    # v1.1 pre-release:双阶段 TopK CLI args
+    parser.add_argument("--loss_threshold", type=float, default=0.01,
+                        help="覆盖 train.loss_threshold(loss 跌穿这个值才进 Phase 2 跑 rollout)")
+    parser.add_argument("--loss_topk_k", type=int, default=3,
+                        help="覆盖 loss TopK 保留数量")
+    parser.add_argument("--score_topk_k", type=int, default=3,
+                        help="覆盖 score TopK 保留数量")
     args = parser.parse_args()
 
     if args.config is not None:
@@ -332,25 +340,56 @@ def main():
         with open(args.config) as f:
             cfg = _yaml.safe_load(f)
         cfg = _resolve(cfg, cfg)
-        logger.info("Loaded config from %s", args.config)
+        logger.info("[加载配置] 从 yaml 读: %s", args.config)
     else:
         cfg = get_default_config()
         cfg = _resolve(cfg, cfg)  # 解析 ${...} 嵌套引用
-        logger.info("Using embedded default config (padp_for_test_golden)")
+        logger.info("[加载配置] 使用嵌入默认配置 (padp_for_test_golden)")
 
     train_cfg = cfg["train"]
     data_cfg = cfg["data"]
+    rollout_cfg = cfg.get("rollout", {}) or {}
 
     if args.max_epochs is not None:
         train_cfg["num_epochs"] = args.max_epochs
-        logger.info("[smoke] Overriding num_epochs=%d", args.max_epochs)
+        logger.info("[smoke] 覆盖 num_epochs=%d", args.max_epochs)
+
+    # v1.1:CLI args 覆盖 rollout 配置
+    if args.no_rollout:
+        rollout_cfg["enabled"] = False
+        train_cfg["skip_rollout"] = True
+        logger.info("[cli] --no_rollout: 已禁用 rollout")
+    if args.rollout_interval is not None:
+        rollout_cfg["interval"] = int(args.rollout_interval)
+        rollout_cfg["first_epoch"] = min(rollout_cfg.get("first_epoch", args.rollout_interval),
+                                          args.rollout_interval)
+        logger.info("[cli] rollout.interval = %d (每 N epoch 判定一次)", args.rollout_interval)
+    if args.n_test_rollout is not None:
+        rollout_cfg["n_test"] = int(args.n_test_rollout)
+        logger.info("[cli] rollout.n_test = %d", args.n_test_rollout)
+    if args.rollout_port is not None:
+        if "server" not in rollout_cfg:
+            rollout_cfg["server"] = {}
+        rollout_cfg["server"]["port"] = int(args.rollout_port)
+        logger.info("[cli] rollout.server.port = %d", args.rollout_port)
+
+    # v1.1 pre-release:双阶段 TopK CLI overrides
+    if args.loss_threshold is not None:
+        train_cfg["loss_threshold"] = float(args.loss_threshold)
+        logger.info("[cli] train.loss_threshold = %.4f (loss 跌到这以下进 Phase 2)", args.loss_threshold)
+    if args.loss_topk_k is not None:
+        train_cfg["loss_topk"]["k"] = int(args.loss_topk_k)
+        logger.info("[cli] train.loss_topk.k = %d", args.loss_topk_k)
+    if args.score_topk_k is not None:
+        train_cfg["score_topk"]["k"] = int(args.score_topk_k)
+        logger.info("[cli] train.score_topk.k = %d", args.score_topk_k)
 
     logger.info("=" * 80)
     logger.info("padp_for_test_train: 1:1 复刻 PADP_v3 黄金命令")
     logger.info("=" * 80)
-    logger.info("data: dataset_path=%s n_demo=%d",
+    logger.info("数据: dataset_path=%s n_demo=%d",
                 data_cfg["dataset_path"], data_cfg["n_demo"])
-    logger.info("train: num_epochs=%d batch=%d num_workers=%d lr=%.2e warmup=%d",
+    logger.info("训练: num_epochs=%d batch=%d num_workers=%d lr=%.2e warmup=%d",
                 train_cfg["num_epochs"], train_cfg["batch_size"], train_cfg["num_workers"],
                 train_cfg["lr"], train_cfg["lr_warmup_steps"])
     logger.info("EMA: power=%s max=%s", train_cfg["ema"]["power"], train_cfg["ema"]["max_value"])
@@ -381,21 +420,21 @@ def main():
         batch_size=data_cfg.get("batch_size") if use_balanced else None,
         sampler_seed=int(data_cfg.get("sampler_seed", 42)),
     )
-    logger.info("Dataset built: %s, n_windows=%d, n_obs_steps=%d, horizon=%d, balanced=%s",
+    logger.info("数据集已构建: %s, n_windows=%d, n_obs_steps=%d, horizon=%d, balanced=%s",
                 type(dataset).__name__, len(dataset),
                 dataset.n_obs_steps, dataset.horizon, use_balanced)
 
     # === 2. Normalizer ===
     normalizer = dataset.get_normalizer()
-    logger.info("Normalizer built: keys=%s", list(normalizer._modules.keys()))
+    logger.info("归一化器已构建: keys=%s", list(normalizer._modules.keys()))
 
     # === 3. Policy (Fat Policy,内部装配 adapter + DM + scheduler) ===
     policy = build_policy(cfg["policy"])
     policy.set_normalizer(normalizer)
     device = torch.device(train_cfg["device"])
     policy.to(device)
-    logger.info("Policy built: %s", type(policy).__name__)
-    logger.info("Policy shape_info: %s", policy.shape_info())
+    logger.info("Policy 已构建: %s", type(policy).__name__)
+    logger.info("Policy 形状信息: %s", policy.shape_info())
 
     # === 4. DataLoader ===
     # >>> DIVERGENCE: 源端 num_workers=32, persistent_workers=True, 无 drop_last
@@ -439,11 +478,11 @@ def main():
         num_warmup_steps=train_cfg["lr_warmup_steps"],
         num_training_steps=total_steps,
     )
-    logger.info("Optimizer: AdamW(betas=%s, eps=%.1e, wd=%.1e)",
+    logger.info("优化器: AdamW(betas=%s, eps=%.1e, wd=%.1e)",
                 tuple(train_cfg.get("betas", [0.95, 0.999])),
                 train_cfg.get("eps", 1e-8),
                 train_cfg.get("weight_decay", 1e-6))
-    logger.info("LR schedule: cosine + %d warmup, total_steps=%d",
+    logger.info("学习率调度: cosine + %d warmup, total_steps=%d",
                 train_cfg["lr_warmup_steps"], total_steps)
 
     # === 6. EMA (与源端对齐:power=0.75) ===
@@ -459,7 +498,7 @@ def main():
             min_value=train_cfg["ema"]["min_value"],
             max_value=train_cfg["ema"]["max_value"],
         )
-        logger.info("EMA enabled: power=%s, max=%s",
+        logger.info("EMA 已启用: power=%s, max=%s",
                     train_cfg["ema"]["power"], train_cfg["ema"]["max_value"])
 
     # === 7. ckpt 路径 ===
@@ -471,17 +510,24 @@ def main():
     # 独立保存 normalizer(不进 policy state_dict)
     torch.save(normalizer.state_dict(), norm_ckpt)
 
-    # TopK manager
-    topk = LossTopKManager(
-        save_dir=ckpt_dir / "topk",
-        k=train_cfg["ckpt_topk"]["k"],
-        format_str=train_cfg["ckpt_topk"]["format_str"],
+    # v1.1 pre-release:双 TopK manager(loss 阶段 + score 阶段)
+    #   - loss_topk: 始终保存到 topk/loss/,按 train_loss (min) 选
+    #   - score_topk: 始终保存到 topk/score/,按 test_mean_score (max) 选
+    loss_topk = LossTopKManager(
+        save_dir=ckpt_dir / "topk" / "loss",
+        k=train_cfg["loss_topk"]["k"],
+        format_str=train_cfg["loss_topk"]["format_str"],
+    )
+    score_topk = ScoreTopKManager(
+        save_dir=ckpt_dir / "topk" / "score",
+        k=train_cfg["score_topk"]["k"],
+        format_str=train_cfg["score_topk"]["format_str"],
     )
 
     # === 8. Resume (源端行为) ===
     start_epoch = 0
     if train_cfg.get("resume", False) and latest_ckpt.exists():
-        logger.info("Resuming from %s", latest_ckpt)
+        logger.info("[续训] 从 %s 恢复", latest_ckpt)
         ck = torch.load(latest_ckpt, map_location="cpu", weights_only=False)
         policy.load_state_dict(ck["model_state"], strict=False)
         if "optim_state" in ck:
@@ -492,9 +538,9 @@ def main():
 
     # === 9. 训练循环 ===
     logger.info("=" * 80)
-    logger.info("Starting training: %d epochs × %d iters = %d total steps",
+    logger.info("开始训练: %d epochs × %d iters = %d total steps",
                 train_cfg["num_epochs"], len(dl), total_steps)
-    logger.info("Skip rollout: %s", train_cfg.get("skip_rollout", True))
+    logger.info("Skip rollout: %s (True=禁用,False=启用)", train_cfg.get("skip_rollout", True))
     logger.info("=" * 80)
 
     global_step = 0
@@ -543,8 +589,35 @@ def main():
                     optim.param_groups[0]["lr"])
         history.append((epoch, avg))
 
-        # === 9.5.  ROLLOUT 已禁用 (v1.0) ===
-        # 黄金标准配置中 train.skip_rollout=True,默认不跑 rollout。
+        # === 9.5.  ROLLOUT (v1.1 pre-release:双阶段) ===
+        # 触发条件(全部满足):
+        #   1. rollout.enabled=True
+        #   2. NOT train.skip_rollout
+        #   3. **avg < loss_threshold**(Phase 1 不跑 rollout,只 Phase 2 跑)
+        #   4. epoch >= first_epoch
+        #   5. (epoch - first_epoch) % interval == 0
+        test_mean_score = None
+        loss_threshold = train_cfg.get("loss_threshold", 0.01)
+        do_rollout = (
+            rollout_cfg.get("enabled", False)
+            and not train_cfg.get("skip_rollout", False)
+            and avg < loss_threshold  # ⭐ 关键:loss < threshold 才会触发 rollout
+            and epoch >= int(rollout_cfg.get("first_epoch", 0))
+            and ((epoch - int(rollout_cfg.get("first_epoch", 0)))
+                 % int(rollout_cfg.get("interval", 1)) == 0)
+        )
+        if avg >= loss_threshold and rollout_cfg.get("enabled", False) \
+                and not train_cfg.get("skip_rollout", False) \
+                and epoch >= int(rollout_cfg.get("first_epoch", 0)):
+            logger.info("[Rollout] epoch=%d 跳过(Phase 1: loss=%.4f >= threshold=%.4f,等 loss 跌穿再触发)",
+                        epoch, avg, loss_threshold)
+        if do_rollout:
+            from E_cti.train.padp_for_test_rollout import run_rollout_via_server_client
+            logger.info("[Rollout] epoch=%d 开始 server+client rollout...", epoch)
+            test_mean_score = run_rollout_via_server_client(
+                policy=policy, ema=ema, cfg=cfg, epoch=epoch,
+            )
+            logger.info("[Rollout ep=%d] test_mean_score=%.4f", epoch, test_mean_score)
 
         # === 10. 保存 latest ckpt + normalizer ===
         ckpt_payload = {
@@ -552,8 +625,8 @@ def main():
             "optim_state": optim.state_dict(),
             "epoch": epoch,
             "train_loss": avg,
-            # 🚧 同时把 normalizer 嵌进 ckpt,方便 server/client 直接加载
-            # (不必再去 load normalizer.pt 路径,见 rollout 流程)
+            "test_mean_score": test_mean_score,  # v1.1:存 score 进 ckpt
+            # 同时把 normalizer 嵌进 ckpt,方便 server/client 直接加载
             "normalizer_state": policy._normalizer.state_dict() if policy._normalizer is not None else None,
         }
         if ema is not None:
@@ -561,21 +634,48 @@ def main():
         torch.save(ckpt_payload, latest_ckpt)
         torch.save(policy._normalizer.state_dict(), norm_ckpt)
 
-        # === 11. TopK ckpt (按 train_loss 升序,选最小 loss) ===
-        topk.try_save(epoch=epoch, train_loss=avg, payload=ckpt_payload)
+        # === 11. TopK 双阶段 (v1.1 pre-release) ===
+        # 1) loss_topk: 始终保存 top-K by train_loss (min)(无脑存)
+        loss_topk.try_save(epoch=epoch, train_loss=float(avg), payload=ckpt_payload)
 
-    # === 12. 训练结束报告 ===
-    best_loss, best_path = topk.best()
+        # 2) score_topk: **只有当 rollout 真跑了**才保存(避免"虚假 score"污染目录)
+        #    test_mean_score is None 的两种情况:
+        #      a) Phase 1 (loss >= loss_threshold): rollout 跳过,score 不存
+        #      b) rollout enabled 但 epoch/first_epoch/interval 不满足:score 不存
+        if test_mean_score is not None:
+            score_topk.try_save(epoch=epoch, score=float(test_mean_score), payload=ckpt_payload)
+            phase = "score"  # 真有 score
+        else:
+            phase = "loss"   # Phase 1 或 rollout 没触发,不污染 score_topk
+        logger.info("[TopK] epoch=%d loss=%.4f score=%s phase=%s (topk/loss%s)",
+                    epoch, avg,
+                    f"{test_mean_score:.4f}" if test_mean_score is not None else "None(rollout没跑)",
+                    phase,
+                    " + topk/score" if test_mean_score is not None else " only")
+        logger.info("[TopK] epoch=%d loss=%.4f score=%s phase=%s (topk/loss + topk/score)",
+                    epoch, avg,
+                    f"{test_mean_score:.4f}" if test_mean_score is not None else "None",
+                    phase)
+
+    # === 12. 训练结束报告 (双 TopK) ===
+    best_loss, best_loss_epoch, best_loss_path = loss_topk.best()
+    best_score, best_score_epoch, best_score_path = score_topk.best()
     logger.info("=" * 80)
-    logger.info("Training done. %d epochs completed.", train_cfg["num_epochs"])
+    logger.info("训练完成: 共 %d epochs。", train_cfg["num_epochs"])
     logger.info("Latest ckpt: %s", latest_ckpt)
     logger.info("Normalizer:  %s", norm_ckpt)
     if best_loss is not None:
-        logger.info("BEST ckpt by train_loss: loss=%.6f  path=%s", best_loss, best_path)
+        logger.info("BEST loss ckpt (Phase 1): loss=%.6f  epoch=%d  path=%s",
+                    best_loss, best_loss_epoch, best_loss_path)
     else:
-        logger.info("No TopK ckpt saved (num_epochs < k?)")
+        logger.info("未保存 loss TopK ckpt")
+    if best_score is not None:
+        logger.info("BEST score ckpt (Phase 2): score=%.6f  epoch=%d  path=%s",
+                    best_score, best_score_epoch, best_score_path)
+    else:
+        logger.info("未保存 score TopK ckpt")
     # 打印 loss 历史
-    logger.info("Loss history:")
+    logger.info("Loss 历史:")
     for ep, loss in history:
         logger.info("  epoch %3d: loss=%.6f", ep, loss)
     logger.info("=" * 80)

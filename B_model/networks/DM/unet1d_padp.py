@@ -1,6 +1,6 @@
 # ============================================================
-# PADP-VLA v1.0
-# 1.0 版本,可训练 PADP 但无 rollout
+# PADP-VLA v1.1
+# 1.1 版本,补 rollout + best-ckpt by test_mean_score (max)
 # ============================================================
 
 """B_model.networks.DM.unet1d_padp —— 1D Conditional UNet(PADP 风格)。

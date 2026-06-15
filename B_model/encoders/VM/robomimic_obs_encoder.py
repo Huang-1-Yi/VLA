@@ -1,6 +1,6 @@
 # ============================================================
-# PADP-VLA v1.0
-# 1.0 版本,可训练 PADP 但无 rollout
+# PADP-VLA v1.1
+# 1.1 版本,补 rollout + best-ckpt by test_mean_score (max)
 # ============================================================
 
 """B_model.encoders.VM.robomimic_obs_encoder —— RobomimicObsEncoder(VLA 单图版)。

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # ============================================================
-# PADP-VLA v1.0
-# 1.0 版本,可训练 PADP 但无 rollout
+# PADP-VLA v1.1
+# 1.1 版本,补 rollout + best-ckpt by test_mean_score (max)
 # ============================================================
 
 """B_model —— 纯算力层(encoders / networks / adapters)。
