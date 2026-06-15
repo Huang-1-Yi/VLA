@@ -53,7 +53,7 @@ policy:
 # ---------- Data ----------
 data:
   n_demo: 200
-  dataset_path: /home/hy/Desktop/PADP_v3/VLA/data/robomimic/datasets/square_d0/square_d0_abs.hdf5
+  dataset_path: data/robomimic/datasets/square_d0/square_d0_abs.hdf5
   horizon: 40
   n_obs_steps: 1
   n_action_steps: 1
@@ -118,7 +118,7 @@ train:
   no_grad_clip: true         # >>> DIVERGENCE: 源端不做 grad clip,VLA run_train 做了 1.0
 
   # 检查点
-  ckpt_dir: data/outputs/padp_for_test_golden
+  ckpt_dir: ../data/outputs/padp_for_test_golden
   resume: true
   seed: 42
 

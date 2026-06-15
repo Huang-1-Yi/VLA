@@ -1,17 +1,11 @@
 # ============================================================
-# padp_for_test_7d_golden —— 1.1 干净版 7D (axis_angle) 训练 config
-#   fork 自 padp_for_test_golden.yaml (10D), 唯一差异:action.shape=[7]
-#   v1.2.4 路消融用 (1.1_7D 路)
-#
-# 7D 行为:dataset 不做 7→10 转换, model 直接用 axis_angle
-# 跟 1.1_10D 的差别: model 输出 7D 而非 10D, sim rollout 时 client 不做 6d→axis_angle 转换
-#
-# 源命令: PADP_v3/train_sim.py --config-name=robomimic_padp_position_wise
-#         task_name=square_d0 n_demo=200 n_obs_steps=1 horizon=40
-#         window_exp_gamma=0.25 policy.noise_schedule_mode=positionwise
-#         dataloader.batch_size=64 policy.pred_type=sample
-#         policy.noise_scheduler.prediction_type=sample
-#         exp_name=PADP_Golden_Standard
+# padp_for_test_golden —— 1:1 复刻 PADP_v3 黄金命令
+#   源命令: PADP_v3/train_sim.py --config-name=robomimic_padp_position_wise
+#           task_name=square_d0 n_demo=200 n_obs_steps=1 horizon=40
+#           window_exp_gamma=0.25 policy.noise_schedule_mode=positionwise
+#           dataloader.batch_size=64 policy.pred_type=sample
+#           policy.noise_scheduler.prediction_type=sample
+#           exp_name=PADP_Golden_Standard
 #
 # 与 train_padp.yaml 的差异(全部在 E_cti/train/padp_for_test_train.py
 # 的 "DIVERGENCE FROM SOURCE" 块中前后留备注):
@@ -59,7 +53,7 @@ policy:
 # ---------- Data ----------
 data:
   n_demo: 200
-  dataset_path: data/robomimic/datasets/square_d0/square_d0_abs.hdf5
+  dataset_path: /home/hy/Desktop/PADP_v3/VLA/data/robomimic/datasets/square_d0/square_d0_abs.hdf5
   horizon: 40
   n_obs_steps: 1
   n_action_steps: 1
@@ -88,7 +82,7 @@ data:
       robot0_gripper_qpos:
         shape: [2]
     action:
-      shape: [7]  # v1.2.4 路消融:1.1_7D 路用 axis_angle 7 维 (跟 hdf5 actions 一致, dataset 不做 7→10 转换, model 直接在 7 维上工作)
+      shape: [10]  # 黄金标准:源端 mimicgen_abs_padp.yaml 用 [10]。hdf5 实际 7 维,Dataset 内部做 7→10 转换(pos3+rot6d+gripper1),policy 始终在 10 维上工作。
 
 # ---------- Train (与源端对齐) ----------
 train:
@@ -124,7 +118,7 @@ train:
   no_grad_clip: true         # >>> DIVERGENCE: 源端不做 grad clip,VLA run_train 做了 1.0
 
   # 检查点
-  ckpt_dir: ../data/outputs/padp_for_test_7d_golden
+  ckpt_dir: data/outputs/padp_for_test_golden
   resume: true
   seed: 42
 
@@ -159,4 +153,4 @@ rollout:
 # ---------- Logging ----------
 logging:
   project: padp_vla_for_test
-  name: padp_7d_golden_standard_h40_obs1_a1_gamma025
+  name: padp_golden_standard_h40_obs1_a1_gamma025

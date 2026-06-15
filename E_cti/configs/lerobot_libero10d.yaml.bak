@@ -47,7 +47,7 @@ policy:
 data:
   # 10D lerobot 数据集 (由 convert_to_lerobot.py --action-dim 10 生成)
   # 训练时 dataset 自动走 v1.2 lerobot 分支 (检测到路径含 'lerobot' + meta/episode_ends.json)
-  dataset_path: data/lerobot/square_d0_lerobot10d
+  dataset_path: VLA/data/lerobot/square_d0_lerobot10d
   n_demo: 200                # 短训用 200 demo (覆盖 v1.1 训练量级)
   horizon: 40
   n_obs_steps: 1
@@ -95,7 +95,7 @@ train:
     min_value: 0.0
     max_value: 0.9999
   no_grad_clip: True
-  ckpt_dir: ../data/outputs/v1.2_lerobot_libero10d
+  ckpt_dir: data/outputs/v1.2_lerobot_libero10d
   resume: False
   seed: 42
   skip_rollout: False       # v1.3.1:生产启用 (跟其他 3 个 config 一致)
