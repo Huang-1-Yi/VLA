@@ -1,5 +1,10 @@
+# ============================================================
+# PADP-VLA v1.0
+# 1.0 版本,可训练 PADP 但无 rollout
+# ============================================================
+
 """铁律 6:BaseVLADataset 显式声明 n_obs_steps 与 horizon。"""
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 from abc import abstractmethod
 import numpy as np
 import torch
@@ -383,7 +388,7 @@ class BaseVLADataset(Dataset):
     horizon: int
 
     @abstractmethod
-    def __getitem__(self, idx: int) -> Tuple[Dict, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Tuple[dict, torch.Tensor]:
         """返回 (obs_dict, action) 二元组。
         action shape 必须严格对齐 [self.horizon, D_a]。
         """

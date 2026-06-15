@@ -1,3 +1,8 @@
+# ============================================================
+# PADP-VLA v1.0
+# 1.0 版本,可训练 PADP 但无 rollout
+# ============================================================
+
 """契约 1:ActionOutput —— 统一动作输出,抹平 step vs chunk。"""
 from dataclasses import dataclass
 import torch

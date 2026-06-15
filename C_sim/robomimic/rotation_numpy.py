@@ -1,3 +1,8 @@
+# ============================================================
+# PADP-VLA v1.0
+# 1.0 版本,可训练 PADP 但无 rollout
+# ============================================================
+
 """C_sim.robomimic.rotation_numpy —— 纯 numpy 的 axis_angle ↔ rotation_6d 工具。
 
 为去掉 pytorch3d 重依赖(原 PADP `RotationTransformer` 顶层 import pytorch3d),

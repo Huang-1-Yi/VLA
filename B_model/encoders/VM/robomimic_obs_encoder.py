@@ -1,3 +1,8 @@
+# ============================================================
+# PADP-VLA v1.0
+# 1.0 版本,可训练 PADP 但无 rollout
+# ============================================================
+
 """B_model.encoders.VM.robomimic_obs_encoder —— RobomimicObsEncoder(VLA 单图版)。
 
 v5-1 简化:
@@ -9,10 +14,8 @@ v5-1 简化:
 """
 import logging
 
-import numpy as np
 import torch
 import torch.nn as nn
-import torchvision
 
 from A_common.logger import get_logger
 from B_model.encoders.interface_vm import VisionEncoderInterface

@@ -1,3 +1,8 @@
+# ============================================================
+# PADP-VLA v1.0
+# 1.0 版本,可训练 PADP 但无 rollout
+# ============================================================
+
 """E_cti.train.padp_for_test_train —— VLA 端 1:1 复刻 PADP_v3 黄金命令训练效果。
 
 ==========================================================================
@@ -102,7 +107,6 @@ import time
 from pathlib import Path
 
 import torch
-import yaml
 from torch.utils.data import DataLoader
 
 # 路径设置:把 VLA_ROOT 加到 sys.path(同 run_train.py 的做法)
@@ -122,7 +126,111 @@ logger = get_logger("padp_for_test_train")
 
 
 # ====================================================================
-# 配置解析(简单支持 ${a.b} 嵌套引用,同 run_train.py)
+# 嵌入的默认配置(原 padp_for_test_golden.yaml,1:1 复刻 PADP_v3 黄金命令)
+# 不再依赖外部 yaml 文件;可通过 --config 覆盖。
+# ====================================================================
+DEFAULT_CONFIG = {
+    "policy": {
+        "name": "padp_unet",
+        "shape_meta": "${data.shape_meta}",
+        "horizon": 40,
+        "n_obs_steps": 1,
+        "n_action_steps": 1,
+        "pred_type": "sample",
+        "noise_schedule_mode": "positionwise",
+        "noise_chunk_size": 1,
+        "window_loss_weights": "exponential",
+        "window_exp_gamma": 0.25,
+        "window_min_weight": 0.02,
+        "crop_shape": [76, 76],
+        "obs_encoder_group_norm": True,
+        "eval_fixed_crop": True,
+        "down_dims": [256, 512, 1024],
+        "kernel_size": 5,
+        "n_groups": 8,
+        "cond_predict_scale": True,
+        "task_name": "square",
+        "scheduler": {
+            "num_train_timesteps": 40,
+            "beta_start": 0.0001,
+            "beta_end": 0.02,
+            "beta_schedule": "squaredcos_cap_v2",
+            "clip_sample": True,
+            "set_alpha_to_one": True,
+            "steps_offset": 0,
+            "prediction_type": "sample",
+        },
+    },
+    "data": {
+        "n_demo": 200,
+        "dataset_path": "data/robomimic/datasets/square_d0/square_d0_abs.hdf5",
+        "horizon": 40,
+        "n_obs_steps": 1,
+        "n_action_steps": 1,
+        "abs_action": True,
+        "use_legacy_normalizer": False,
+        # RTV8-aligned balanced-columns sampler 开关
+        # false: 走 SequenceSampler + DataLoader(shuffle=True)  [默认]
+        # true:  走 BalancedColumnsSampler (RTV8 1:1 复刻)
+        "balanced_sampler": True,
+        "batch_size": 64,
+        "sampler_seed": 42,
+        "shape_meta": {
+            "obs": {
+                "agentview_image": {"shape": [3, 84, 84], "type": "rgb"},
+                "robot0_eye_in_hand_image": {"shape": [3, 84, 84], "type": "rgb"},
+                "robot0_eef_pos": {"shape": [3]},
+                "robot0_eef_quat": {"shape": [4]},
+                "robot0_gripper_qpos": {"shape": [2]},
+            },
+            "action": {"shape": [10]},  # hdf5 实际 7D,dataset 内部做 7→10
+        },
+    },
+    "train": {
+        "num_epochs": 251,         # 源端 ${50000 / n_demo + 1} = 251
+        "batch_size": 64,
+        "num_workers": 32,         # 源端(对齐 PADP)
+        "pin_memory": True,
+        "persistent_workers": True,
+        "drop_last": False,        # 源端不用 drop_last
+        "device": "cuda:0",
+        "log_every": 50,
+        "lr": 1.0e-4,
+        "betas": [0.95, 0.999],    # 源端
+        "eps": 1.0e-8,
+        "weight_decay": 1.0e-6,
+        "lr_scheduler": "cosine",
+        "lr_warmup_steps": 500,    # 源端
+        "use_ema": True,
+        "ema": {
+            "update_after_step": 0,
+            "inv_gamma": 1.0,
+            "power": 0.75,          # 源端
+            "min_value": 0.0,
+            "max_value": 0.9999,
+        },
+        "no_grad_clip": True,      # 源端
+        "ckpt_dir": "data/outputs/padp_for_test_golden",
+        "resume": True,
+        "seed": 42,
+        "skip_rollout": True,
+        "ckpt_topk": {
+            "monitor_key": "train_loss",
+            "mode": "min",
+            "k": 5,
+            "format_str": "epoch{epoch:03d}_loss{train_loss:.4f}.ckpt",
+        },
+    },
+    "rollout": {"enabled": False},
+    "logging": {
+        "project": "padp_vla_for_test",
+        "name": "padp_golden_standard_h40_obs1_a1_gamma025",
+    },
+}
+
+
+# ====================================================================
+# 配置解析(简单支持 ${a.b} 嵌套引用)
 # ====================================================================
 def _resolve(obj, root):
     if isinstance(obj, dict):
@@ -137,10 +245,10 @@ def _resolve(obj, root):
     return obj
 
 
-def load_config(path: str) -> dict:
-    with open(path) as f:
-        cfg = yaml.safe_load(f)
-    return _resolve(cfg, cfg)
+def get_default_config() -> dict:
+    """返回深拷贝的默认配置(避免外部修改污染原字典)。"""
+    import copy as _copy
+    return _copy.deepcopy(DEFAULT_CONFIG)
 
 
 # ====================================================================
@@ -213,13 +321,23 @@ class LossTopKManager:
 # ====================================================================
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str,
-                        default=str(_VLA_ROOT / "E_cti/configs/padp_for_test_golden.yaml"))
+    parser.add_argument("--config", type=str, default=None,
+                        help="可选:从 yaml 文件覆盖默认配置(不传则用嵌入的默认配置)")
     parser.add_argument("--max_epochs", type=int, default=None,
                         help="覆盖 config 里的 num_epochs(用于 smoke test)")
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
+    if args.config is not None:
+        import yaml as _yaml
+        with open(args.config) as f:
+            cfg = _yaml.safe_load(f)
+        cfg = _resolve(cfg, cfg)
+        logger.info("Loaded config from %s", args.config)
+    else:
+        cfg = get_default_config()
+        cfg = _resolve(cfg, cfg)  # 解析 ${...} 嵌套引用
+        logger.info("Using embedded default config (padp_for_test_golden)")
+
     train_cfg = cfg["train"]
     data_cfg = cfg["data"]
 
@@ -229,7 +347,6 @@ def main():
 
     logger.info("=" * 80)
     logger.info("padp_for_test_train: 1:1 复刻 PADP_v3 黄金命令")
-    logger.info("Config: %s", args.config)
     logger.info("=" * 80)
     logger.info("data: dataset_path=%s n_demo=%d",
                 data_cfg["dataset_path"], data_cfg["n_demo"])
@@ -426,21 +543,8 @@ def main():
                     optim.param_groups[0]["lr"])
         history.append((epoch, avg))
 
-        # === 9.5.  ROLLOUT (server + client 模式) ===
-        # 仿源端 PADP train_padp_workspace_v3.run() 第 696-718 行的 rollout 段。
-        # 源端是 in-process 的 env_runner.run(policy);本文件按用户的指引
-        # 拆成 server (policy) + client (env) 两个独立进程,通过 TCP+JSON 协议交互。
-        # **交互逻辑当前是 TODO**:实际数据序列化 / 多相机编码 / 错误重试 等细节
-        # 在与用户确认后再补,本文件先用最简单的 stub 跑通 pipeline。
-        rollout_cfg = cfg.get("rollout", {}) if isinstance(cfg, dict) else {}
-        if (not train_cfg.get("skip_rollout", True)) and rollout_cfg.get("enabled", False) \
-                and (epoch % int(rollout_cfg.get("rollout_every", 1)) == 0):
-            from E_cti.train.padp_for_test_rollout import run_rollout_via_server_client
-            test_mean_score = run_rollout_via_server_client(
-                policy=policy, ema=ema, cfg=cfg, epoch=epoch,
-            )
-            history.append((epoch, avg, test_mean_score))
-            logger.info("Epoch %d ROLLOUT: test_mean_score=%s", epoch, test_mean_score)
+        # === 9.5.  ROLLOUT 已禁用 (v1.0) ===
+        # 黄金标准配置中 train.skip_rollout=True,默认不跑 rollout。
 
         # === 10. 保存 latest ckpt + normalizer ===
         ckpt_payload = {

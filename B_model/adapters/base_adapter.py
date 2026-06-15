@@ -1,3 +1,8 @@
+# ============================================================
+# PADP-VLA v1.0
+# 1.0 版本,可训练 PADP 但无 rollout
+# ============================================================
+
 """B_model.adapters.base_adapter —— Adapter 抽象基类。
 
 Adapter 在 B_model/adapters/<algo>_adapter.py 继承本类。

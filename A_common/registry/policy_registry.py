@@ -1,3 +1,8 @@
+# ============================================================
+# PADP-VLA v1.0
+# 1.0 版本,可训练 PADP 但无 rollout
+# ============================================================
+
 """契约 3:policy_registry —— Policy 注册表(全程序唯一)。"""
 import threading
 from typing import Dict, List, Type

@@ -1,12 +1,9 @@
-# -*- coding: utf-8 -*-
-"""Gpolicy.PADP —— PADP 算法 Fat Policy(策略大脑)。"""
-from Gpolicy.PADP.padp_policy import SlidingWindowDiffusionPolicy
-from Gpolicy.PADP.loss_weights import padp_loss_weights
-from Gpolicy.PADP.metrics import per_position_mse, per_position_nmse
+# ============================================================
+# PADP-VLA v1.0
+# 1.0 版本,可训练 PADP 但无 rollout
+# ============================================================
 
-__all__ = [
-    "SlidingWindowDiffusionPolicy",
-    "padp_loss_weights",
-    "per_position_mse",
-    "per_position_nmse",
-]
+"""Gpolicy.PADP —— PADP 算法 Fat Policy。"""
+from Gpolicy.PADP.padp_policy import SlidingWindowDiffusionPolicy
+
+__all__ = ["SlidingWindowDiffusionPolicy"]

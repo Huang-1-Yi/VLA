@@ -1,3 +1,8 @@
+# ============================================================
+# PADP-VLA v1.0
+# 1.0 版本,可训练 PADP 但无 rollout
+# ============================================================
+
 """normalizer_utils —— normalizer 工具函数(从 PADP normalize_util.py 抽出来)。"""
 import numpy as np
 

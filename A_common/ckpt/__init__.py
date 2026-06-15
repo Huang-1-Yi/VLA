@@ -1,4 +1,9 @@
 # -*- coding: utf-8 -*-
+# ============================================================
+# PADP-VLA v1.0
+# 1.0 版本,可训练 PADP 但无 rollout
+# ============================================================
+
 """A_common.ckpt —— checkpoint 工具(阶段 1 简单版,只存 model state_dict + normalizer + config)。"""
 import torch
 from pathlib import Path

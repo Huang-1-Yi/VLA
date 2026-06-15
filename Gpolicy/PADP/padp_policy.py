@@ -1,3 +1,8 @@
+# ============================================================
+# PADP-VLA v1.0
+# 1.0 版本,可训练 PADP 但无 rollout
+# ============================================================
+
 """Gpolicy.PADP.padp_policy —— PADP 算法 Fat Policy(策略大脑)。
 
 源:抄自 PADP `diffusion_policy/policy/robomimic/diffusion_unet_hybrid_padp.py:SlidingWindowDiffusionPolicy`
@@ -19,7 +24,7 @@ E_cti 只调 2 个高层入口:
     action = policy.predict_action(obs)
 """
 import math
-from typing import Dict, Optional
+from typing import Optional
 
 import torch
 import torch.nn as nn

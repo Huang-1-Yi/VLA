@@ -1,3 +1,8 @@
+# ============================================================
+# PADP-VLA v1.0
+# 1.0 版本,可训练 PADP 但无 rollout
+# ============================================================
+
 """B_model.networks.DM.unet1d_padp —— 1D Conditional UNet(PADP 风格)。
 
 源:抄自 PADP `diffusion_policy/model/diffusion/conditional_unet1d_padp.py` + `conv1d_components.py`,
