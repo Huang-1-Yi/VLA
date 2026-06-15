@@ -153,28 +153,34 @@ class RobomimicZarrDatasetPadpForTest(BaseVLADataset):
                 real_lens.append(int(d["actions"].shape[0]))
             real_lens = np.asarray(real_lens, dtype=np.int64)
 
-            # === 防漂移:以 hdf5 实际维度为准 ===
+            # === v1.2.4 路消融:config-driven 维度校验 ===
+            # config action.shape 决定 dataset 内部 action_dim
+            # 7D config + 7D hdf5: 不做 7→10 (新行为, 之前 1.1 强转 7→10)
+            # 10D config + 7D hdf5: 做 7→10 (跟 1.1 原行为一致)
+            # 10D config + 10D hdf5: 不做转换
+            # 7D config + 10D hdf5: 不允许 (raise)
             actual_action_dim = int(demos[f"demo_0"]["actions"].shape[1])
             if action_dim != actual_action_dim:
-                if abs_action and actual_action_dim == 7 and action_dim == 10:
+                if abs_action and action_dim == 10 and actual_action_dim == 7:
                     # 预期:config 期望 10D(6D),hdf5 实际 7D,会做 7→10 转换
                     pass
                 else:
-                    logger.warning(
-                        "[padp_for_test] config action_dim=%d 与 hdf5 实际 %d 不一致;"
-                        "以 hdf5 为准(防御 config 漂移)。",
-                        action_dim, actual_action_dim,
+                    raise ValueError(
+                        f"[padp_for_test] config action.shape={action_dim} 跟 hdf5 实际 "
+                        f"actions.shape[-1]={actual_action_dim} 不一致。"
+                        f" 7D 用 `padp_for_test_7d_golden.yaml` (action.shape=[7]),"
+                        f" 10D 用 `padp_for_test_golden.yaml` (action.shape=[10])。"
                     )
-                    action_dim = actual_action_dim
 
             # 物理化填充
             pad = horizon - 1
             real_lens_new = real_lens + 2 * pad
             total = int(real_lens_new.sum())
 
-            # 内部 action_dim(转换后维度)
+            # 内部 action_dim(转换后维度):config 决定, 不再硬编码
             internal_action_dim = action_dim
-            if abs_action and actual_action_dim == 7:
+            if abs_action and action_dim == 10 and actual_action_dim == 7:
+                # 7→10 rot6d 转换(只在 config 显式要 10D 时)
                 internal_action_dim = 10
 
             # 创建数组 —— 全部用 zarr v2 API (create_dataset)
@@ -217,7 +223,8 @@ class RobomimicZarrDatasetPadpForTest(BaseVLADataset):
 
                 # actions: 7→10 转换
                 act = d["actions"][:].astype(np.float32)
-                if abs_action and actual_action_dim == 7:
+                # v1.2.4 路消融:7→10 转换只在 config 显式要 10D 时才做
+                if abs_action and action_dim == 10 and actual_action_dim == 7:
                     act = axis_angle_to_rotation_6d_batch(act)
                 # 边缘复制填充
                 padded_act = np.zeros((rln,) + act.shape[1:], dtype=np.float32)

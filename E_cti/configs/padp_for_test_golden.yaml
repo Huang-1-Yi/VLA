@@ -1,0 +1,154 @@
+# ============================================================
+# padp_for_test_golden —— 1:1 复刻 PADP_v3 黄金命令
+#   源命令: PADP_v3/train_sim.py --config-name=robomimic_padp_position_wise
+#           task_name=square_d0 n_demo=200 n_obs_steps=1 horizon=40
+#           window_exp_gamma=0.25 policy.noise_schedule_mode=positionwise
+#           dataloader.batch_size=64 policy.pred_type=sample
+#           policy.noise_scheduler.prediction_type=sample
+#           exp_name=PADP_Golden_Standard
+#
+# 与 train_padp.yaml 的差异(全部在 E_cti/train/padp_for_test_train.py
+# 的 "DIVERGENCE FROM SOURCE" 块中前后留备注):
+#   1. optimizer.betas: (0.95, 0.999)  (源端,不是 VLA run_train 的默认 0.9/0.999)
+#   2. lr_scheduler.warmup_steps: 500  (源端,不是 VLA run_train 的 0)
+#   3. num_workers: 32  (源端,不是 VLA run_train 的 4)
+#   4. drop_last: false  (源端,不是 VLA run_train 的 true)
+#   5. ckpt.topk.monitor_key: train_loss (源端是 test_mean_score,这里用 loss)
+#   6. ckpt.topk.mode: min  (loss 越低越好,与源端 score 越高越好反过来)
+#   7. no_grad_clip: true  (源端没有,VLA run_train 有)
+#   8. ema.power: 0.75  (源端,VLA EMAModel 默认 2/3)
+# ============================================================
+
+# ---------- Policy (从 train_padp.yaml 抄,加 scheduler 字段) ----------
+policy:
+  name: padp_unet
+  shape_meta: ${data.shape_meta}
+  horizon: 40
+  n_obs_steps: 1
+  n_action_steps: 1
+  pred_type: sample
+  noise_schedule_mode: positionwise
+  noise_chunk_size: 1
+  window_loss_weights: exponential
+  window_exp_gamma: 0.25
+  window_min_weight: 0.02
+  crop_shape: [76, 76]
+  obs_encoder_group_norm: true
+  eval_fixed_crop: true
+  down_dims: [256, 512, 1024]
+  kernel_size: 5
+  n_groups: 8
+  cond_predict_scale: true
+  task_name: square
+  scheduler:
+    num_train_timesteps: 40
+    beta_start: 0.0001
+    beta_end: 0.02
+    beta_schedule: squaredcos_cap_v2
+    clip_sample: true
+    set_alpha_to_one: true
+    steps_offset: 0
+    prediction_type: sample
+
+# ---------- Data ----------
+data:
+  n_demo: 200
+  dataset_path: /home/hy/Desktop/PADP_v3/VLA/data/robomimic/datasets/square_d0/square_d0_abs.hdf5
+  horizon: 40
+  n_obs_steps: 1
+  n_action_steps: 1
+  abs_action: true
+  use_legacy_normalizer: false
+  # ---- RTV8-aligned balanced-columns sampler 开关 ----
+  # false: 走 SequenceSampler + DataLoader(shuffle=True)  [默认,向后兼容]
+  # true:  走 BalancedColumnsSampler (RTV8 1:1 复刻)
+  #         DataLoader 自动转 shuffle=False + drop_last=True
+  #         set_epoch(epoch_idx) 在 train.py 每 epoch 调一次,per-epoch 重排
+  balanced_sampler: true
+  batch_size: 64          # balanced 模式下必传(等于 train.batch_size)
+  sampler_seed: 42        # balanced 模式的随机种子(per-epoch 由 seed+epoch 决定)
+  shape_meta:
+    obs:
+      agentview_image:
+        shape: [3, 84, 84]
+        type: rgb
+      robot0_eye_in_hand_image:
+        shape: [3, 84, 84]
+        type: rgb
+      robot0_eef_pos:
+        shape: [3]
+      robot0_eef_quat:
+        shape: [4]
+      robot0_gripper_qpos:
+        shape: [2]
+    action:
+      shape: [10]  # 黄金标准:源端 mimicgen_abs_padp.yaml 用 [10]。hdf5 实际 7 维,Dataset 内部做 7→10 转换(pos3+rot6d+gripper1),policy 始终在 10 维上工作。
+
+# ---------- Train (与源端对齐) ----------
+train:
+  num_epochs: 251  # 源端 ${eval:'50000 / ${n_demo} + 1'} = 251
+  batch_size: 64
+  num_workers: 32            # 源端(注意:VLA run_train 用 4)
+  pin_memory: true
+  persistent_workers: true
+  drop_last: false           # 源端不用 drop_last
+  device: cuda:0
+  log_every: 50
+
+  # 优化器
+  lr: 1.0e-4
+  betas: [0.95, 0.999]       # >>> DIVERGENCE: 源端用 0.95/0.999,VLA run_train 用默认 0.9/0.999
+  eps: 1.0e-8
+  weight_decay: 1.0e-6
+
+  # LR 调度
+  lr_scheduler: cosine
+  lr_warmup_steps: 500       # >>> DIVERGENCE: 源端用 cosine+500 warmup,VLA run_train 用 0
+
+  # EMA
+  use_ema: true
+  ema:
+    update_after_step: 0
+    inv_gamma: 1.0
+    power: 0.75               # >>> DIVERGENCE: 源端 0.75,VLA EMAModel 默认 2/3
+    min_value: 0.0
+    max_value: 0.9999
+
+  # 梯度裁剪
+  no_grad_clip: true         # >>> DIVERGENCE: 源端不做 grad clip,VLA run_train 做了 1.0
+
+  # 检查点
+  ckpt_dir: data/outputs/padp_for_test_golden
+  resume: true
+  seed: 42
+
+  # 跳过 rollout(用户明确要求)
+  skip_rollout: true
+  # TopK ckpt 策略 (跟 v1.1 train 期望的新字段命名)
+  loss_topk:
+    k: 5
+    format_str: "epoch{epoch:03d}_loss{train_loss:.4f}.ckpt"
+  score_topk:
+    k: 5
+    format_str: "epoch{epoch:03d}_score{test_mean_score:.4f}.ckpt"
+  loss_threshold: 0.01
+
+# ---------- Rollout (server+client 模式,源端 v3 黄金配置) ----------
+rollout:
+  enabled: false                       # 与 skip_rollout 至少有一个为 false
+  rollout_every: 1                     # 每 N epoch 跑一次 rollout(源端 v3:1000/n_demo=5)
+  n_test: 3                            # 跑 N 个测试 episode
+  max_steps: 400                       # 单 episode 最长步数
+  server:
+    host: 127.0.0.1
+    port: 8765                         # server 监听端口
+    spawn: true                        # true: 训练脚本 spawn;false: 假设用户已手动起 server
+    wait_timeout_sec: 60               # 启动等待超时
+  client:
+    spawn: true                        # true: 训练脚本 spawn;false: 跑 in-process (调试用)
+    log_path: data/outputs/padp_for_test_golden/rollout_logs
+
+# ---------- Logging ----------
+logging:
+  project: padp_vla_for_test
+  name: padp_golden_standard_h40_obs1_a1_gamma025

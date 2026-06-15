@@ -1,0 +1,131 @@
+# VLA v1.2 lerobot 数据集训练 config (10D 模式, rot6d action)
+#
+# 用法:
+#   cd /home/hy/Desktop/PADP_v3
+#   CUDA_VISIBLE_DEVICES=0 /opt/miniconda3/envs/equidiff/bin/python \
+#     VLA/E_cti/train/padp_for_test_train.py \
+#     --config VLA/E_cti/configs/lerobot_libero10d.yaml \
+#     --max_epochs 5 --no_rollout
+#
+# v1.2 + v1.3 关键点:
+#   - dataset_path 指向 lerobot parquet 目录(由 convert_to_lerobot.py --action-dim 10 生成)
+#   - shape_meta 用 lerobot 字段名 (observation.image / .wrist_image / .state)
+#   - action_dim = 10 (rot6d), 跟 lerobot 目录实际 action shape 一致
+#   - loss_threshold=0.1: 10D rot6d loss 跌得很快, 第 1 epoch 即可达 0.1 之下
+#   - 短训 (5 epochs) 即可出可用 ckpt, 后续 v1.3 Method C 拿这个 ckpt 跑 sim rollout
+
+policy:
+  name: padp_unet
+  shape_meta: ${data.shape_meta}
+  horizon: 40
+  n_obs_steps: 1
+  n_action_steps: 1
+  pred_type: sample
+  noise_schedule_mode: positionwise
+  noise_chunk_size: 1
+  window_loss_weights: exponential
+  window_exp_gamma: 0.25
+  window_min_weight: 0.02
+  crop_shape: [76, 76]
+  obs_encoder_group_norm: True
+  eval_fixed_crop: True
+  down_dims: [256, 512, 1024]
+  kernel_size: 5
+  n_groups: 8
+  cond_predict_scale: True
+  task_name: square
+  scheduler:
+    num_train_timesteps: 40
+    beta_start: 0.0001
+    beta_end: 0.02
+    beta_schedule: squaredcos_cap_v2
+    clip_sample: True
+    set_alpha_to_one: True
+    steps_offset: 0
+    prediction_type: sample
+
+data:
+  # 10D lerobot 数据集 (由 convert_to_lerobot.py --action-dim 10 生成)
+  # 训练时 dataset 自动走 v1.2 lerobot 分支 (检测到路径含 'lerobot' + meta/episode_ends.json)
+  dataset_path: VLA/data/lerobot/square_d0_lerobot10d
+  n_demo: 200                # 短训用 200 demo (覆盖 v1.1 训练量级)
+  horizon: 40
+  n_obs_steps: 1
+  n_action_steps: 1
+  abs_action: True
+  use_legacy_normalizer: False
+  balanced_sampler: True     # RTV8 1:1 复刻
+  batch_size: 64
+  sampler_seed: 42
+  # v1.2 lerobot shape_meta:用 lerobot 标准字段名
+  shape_meta:
+    obs:
+      observation.image:
+        type: rgb
+        shape: [3, 84, 84]
+      observation.wrist_image:
+        type: rgb
+        shape: [3, 84, 84]
+      observation.state:
+        type: low_dim
+        shape: [8]           # LIBERO 标准 8D
+    action:
+      shape: [10]            # 10D rot6d
+
+train:
+  num_epochs: 5              # 短训 5 epochs 即可拿到 < 0.1 loss 的 ckpt
+  batch_size: 64
+  num_workers: 8             # lerobot 加载比 hdf5 重, worker 减半 (原 32)
+  pin_memory: True
+  persistent_workers: True
+  drop_last: False
+  device: cuda:0
+  log_every: 50
+  lr: 1.0e-4
+  betas: [0.95, 0.999]
+  eps: 1.0e-8
+  weight_decay: 1.0e-6
+  lr_scheduler: cosine
+  lr_warmup_steps: 500
+  use_ema: True
+  ema:
+    update_after_step: 0
+    inv_gamma: 1.0
+    power: 0.75
+    min_value: 0.0
+    max_value: 0.9999
+  no_grad_clip: True
+  ckpt_dir: data/outputs/v1.2_lerobot_libero10d
+  resume: False
+  seed: 42
+  skip_rollout: True        # 短训不开 rollout, 留 v1.3 单独测 sim rollout
+  loss_threshold: 0.1        # 10D loss 跌得快, 几 epoch 即可达 0.1 之下
+  loss_topk:
+    k: 3
+    format_str: "epoch{epoch:03d}_loss{train_loss:.4f}.ckpt"
+  score_topk:
+    k: 3
+    format_str: "epoch{epoch:03d}_score{test_mean_score:.4f}.ckpt"
+
+rollout:
+  enabled: False             # 短训阶段禁用, v1.3 Method C 单独跑
+  n_train: 2
+  n_test: 4
+  max_steps: 400
+  interval: 5
+  first_epoch: 5
+  abs_action: True
+  task_name: ${policy.task_name}
+  test_start_seed: 10000
+  server:
+    host: 127.0.0.1
+    port: 8765
+    spawn: True
+    wait_timeout_sec: 60
+  client:
+    spawn: True
+  client_timeout_sec: 600
+
+logging:
+  project: padp_vla_for_test
+  name: v1.2_lerobot_libero10d

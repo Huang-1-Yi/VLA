@@ -1,0 +1,131 @@
+# VLA v1.2 lerobot 数据集训练 config(7D 模式默认)
+#
+# 用法:
+#   cd /home/hy/Desktop/PADP_v3
+#   CUDA_VISIBLE_DEVICES=0 /opt/miniconda3/envs/equidiff/bin/python \
+#     VLA/E_cti/train/padp_for_test_train.py \
+#     --config VLA/E_cti/configs/lerobot_libero.yaml \
+#     --max_epochs 2 --no_rollout
+#
+# v1.2 关键点:
+#   - dataset_path 指向 lerobot parquet 目录(由 convert_to_lerobot.py 生成)
+#   - shape_meta 用 lerobot 字段名 (observation.image / .wrist_image / .state)
+#   - action_dim 跟 lerobot 目录的实际 action shape 一致(7D 或 10D)
+#   - normalizer 复用 v1.1 公式(7D/10D 都支持,见 robomimic_abs_action_only_normalizer_from_stat)
+#   - 完整 RTV8-aligned BalancedColumnsSampler 走法(balanced_sampler=True)
+
+policy:
+  name: padp_unet
+  shape_meta: ${data.shape_meta}
+  horizon: 40
+  n_obs_steps: 1
+  n_action_steps: 1
+  pred_type: sample
+  noise_schedule_mode: positionwise
+  noise_chunk_size: 1
+  window_loss_weights: exponential
+  window_exp_gamma: 0.25
+  window_min_weight: 0.02
+  crop_shape: [76, 76]
+  obs_encoder_group_norm: True
+  eval_fixed_crop: True
+  down_dims: [256, 512, 1024]
+  kernel_size: 5
+  n_groups: 8
+  cond_predict_scale: True
+  task_name: square
+  scheduler:
+    num_train_timesteps: 40
+    beta_start: 0.0001
+    beta_end: 0.02
+    beta_schedule: squaredcos_cap_v2
+    clip_sample: True
+    set_alpha_to_one: True
+    steps_offset: 0
+    prediction_type: sample
+
+data:
+  # 7D lerobot 数据集(由 convert_to_lerobot.py --action-dim 7 生成)
+  # 训练时 dataset 自动走 v1.2 lerobot 分支(检测到路径含 'lerobot' + meta/episode_ends.json)
+  dataset_path: VLA/data/lerobot/square_d0_lerobot7d
+  n_demo: 50                 # smoke test 用 50,实际训练用 200
+  horizon: 40
+  n_obs_steps: 1
+  n_action_steps: 1
+  abs_action: True
+  use_legacy_normalizer: False
+  balanced_sampler: True     # RTV8 1:1 复刻
+  batch_size: 64
+  sampler_seed: 42
+  # v1.2 lerobot shape_meta:用 lerobot 标准字段名
+  shape_meta:
+    obs:
+      observation.image:
+        type: rgb
+        shape: [3, 84, 84]
+      observation.wrist_image:
+        type: rgb
+        shape: [3, 84, 84]
+      observation.state:
+        type: low_dim
+        shape: [8]           # LIBERO 标准 8D
+    action:
+      shape: [7]             # 跟 lerobot 目录实际 action shape 一致(7D)
+
+train:
+  num_epochs: 251            # 默认;--max_epochs 覆盖
+  batch_size: 64
+  num_workers: 8             # lerobot 加载比 hdf5 重,worker 减半(原 32)
+  pin_memory: True
+  persistent_workers: True
+  drop_last: False
+  device: cuda:0
+  log_every: 50
+  lr: 1.0e-4
+  betas: [0.95, 0.999]
+  eps: 1.0e-8
+  weight_decay: 1.0e-6
+  lr_scheduler: cosine
+  lr_warmup_steps: 500
+  use_ema: True
+  ema:
+    update_after_step: 0
+    inv_gamma: 1.0
+    power: 0.75
+    min_value: 0.0
+    max_value: 0.9999
+  no_grad_clip: True
+  ckpt_dir: data/outputs/v1.2_lerobot_libero7d
+  resume: False
+  seed: 42
+  skip_rollout: True        # v1.2 默认不开 rollout(smoke test)
+  loss_threshold: 0.01
+  loss_topk:
+    k: 3
+    format_str: "epoch{epoch:03d}_loss{train_loss:.4f}.ckpt"
+  score_topk:
+    k: 3
+    format_str: "epoch{epoch:03d}_score{test_mean_score:.4f}.ckpt"
+
+rollout:
+  enabled: False             # v1.2 smoke test 阶段禁用
+  n_train: 2
+  n_test: 4
+  max_steps: 400
+  interval: 5
+  first_epoch: 5
+  abs_action: True
+  task_name: ${policy.task_name}
+  test_start_seed: 10000
+  server:
+    host: 127.0.0.1
+    port: 8765
+    spawn: True
+    wait_timeout_sec: 60
+  client:
+    spawn: True
+  client_timeout_sec: 600
+
+logging:
+  project: padp_vla_for_test
+  name: v1.2_lerobot_libero7d

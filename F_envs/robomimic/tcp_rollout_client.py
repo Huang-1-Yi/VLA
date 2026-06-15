@@ -90,6 +90,13 @@ class PadpRolloutClient:
         timeout_sec: float = 30.0,
         verbose: bool = True,
         wait_server_ready: bool = True,
+        # === v1.2 lerobot 并行:env 包装 + init state 源 ===
+        use_lerobot_env: bool = False,
+        hdf5_for_init_states: Optional[str] = None,
+        # === 4 路消融:action 维度 ===
+        # 10 = rot6d (PADP 标准, 1.1_10D / 1.2_10D)
+        # 7  = axis_angle (1.1_7D / 1.2_7D, server 直接发 7D 不转)
+        action_dim: int = 10,
     ):
         self.host = host
         self.port = int(port)
@@ -105,6 +112,16 @@ class PadpRolloutClient:
         self.timeout_sec = float(timeout_sec)
         self.verbose = bool(verbose)
         self.wait_server_ready = bool(wait_server_ready)
+        self.use_lerobot_env = bool(use_lerobot_env)
+        # v1.2 lerobot:init states 不能从 lerobot parquet 读(没存 sim state)
+        # 默认用 dataset_path(若是 lerobot, caller 必须显式传 hdf5_for_init_states)
+        self.hdf5_for_init_states = (
+            os.path.abspath(hdf5_for_init_states) if hdf5_for_init_states
+            else self.dataset_path
+        )
+        # 4 路消融:action 维度(10=rot6d, 7=axis_angle)
+        assert int(action_dim) in (7, 10), f"action_dim 必须是 7 或 10, 收到 {action_dim}"
+        self.action_dim = int(action_dim)
 
         self.sock: Optional[socket.socket] = None
         self.env = None
@@ -155,42 +172,74 @@ class PadpRolloutClient:
             )
 
     def _load_env(self) -> None:
-        """懒加载 env + 预读 hdf5 init states。"""
+        """懒加载 env + 预读 hdf5 init states。
+
+        v1.2 lerobot 并行:
+          - use_lerobot_env=False (1.1 默认):跟原 1.1 一致
+          - use_lerobot_env=True  (1.2 lerobot):用 LerobotRobomimicEnv 包装 RobomimicEnv,
+            init states 从 hdf5_for_init_states 读(默认 = dataset_path, 若是 lerobot 则 caller 必须显式传)
+        """
         if self.verbose:
-            print(f"[client] Loading env for task {self.task_name!r} ...")
+            print(f"[client] Loading env for task {self.task_name!r} "
+                  f"(lerobot_wrapper={self.use_lerobot_env}) ...")
         # 通过 C_sim 注册的工厂造 env
         from C_sim.robomimic.interface_robomimic_env import make_robomimic_env
         # 触发 F_envs.robomimic 注册
         import F_envs.robomimic  # noqa: F401
         from F_envs.robomimic.make_env import _resolve_dataset_path
 
-        # 把 dataset_path 强制注入(若用户传了)
-        # 走工厂(自动取默认 dataset,这里我们 patch 一下)
+        # 把 env_factory 用的 dataset_path 强制注入
+        # 注意:v1.2 lerobot 时,env_factory 必须用 hdf5 路径(读 env_args),
+        #      不是 lerobot 目录
         from F_envs.robomimic import make_env as _make_env_mod
-        if self.dataset_path and os.path.exists(self.dataset_path):
+        # 决定 env_factory 用的 dataset path
+        if self.use_lerobot_env:
+            # v1.2 lerobot: env_factory 用 hdf5_for_init_states (hdf5), dataset_path 留 lerobot
+            factory_dataset_path = self.hdf5_for_init_states
+        else:
+            factory_dataset_path = self.dataset_path
+        if factory_dataset_path and os.path.exists(factory_dataset_path):
             # 临时 patch _DEFAULT_DATASETS
-            _make_env_mod._DEFAULT_DATASETS[self.task_name] = self.dataset_path
+            _make_env_mod._DEFAULT_DATASETS[self.task_name] = factory_dataset_path
 
-        self.env = make_robomimic_env(
+        raw_env = make_robomimic_env(
             task_name=self.task_name,
             shape_meta=self.shape_meta,
             max_steps=self.max_steps,
             abs_action=self.abs_action,
         )
 
+        # v1.2 lerobot:用包装类
+        if self.use_lerobot_env:
+            from F_envs.robomimic.lerobot_robomimic_env import LerobotRobomimicEnv
+            self.env = LerobotRobomimicEnv(raw_env)
+            if self.verbose:
+                print(f"[client] Wrapped with LerobotRobomimicEnv (obs_to_lerobot active)")
+        else:
+            self.env = raw_env
+
         # 预读 n_train 个 demo 的 init states
-        with h5py.File(self.dataset_path, "r") as f:
-            for i in range(self.n_train):
-                demo_idx = self.train_start_idx + i
-                key = f"data/demo_{demo_idx}/states"
-                if key not in f:
-                    raise KeyError(
-                        f"Dataset missing {key}; available demos: "
-                        f"{list(f['data'].keys())[:5]}..."
-                    )
-                self.train_init_states.append(f[key][0])
+        # v1.2 lerobot 路径:用 hdf5_for_init_states 读原 hdf5 的 sim state
+        hdf5_path = self.hdf5_for_init_states
+        if hdf5_path.endswith(".hdf5") and os.path.exists(hdf5_path):
+            with h5py.File(hdf5_path, "r") as f:
+                for i in range(self.n_train):
+                    demo_idx = self.train_start_idx + i
+                    key = f"data/demo_{demo_idx}/states"
+                    if key not in f:
+                        raise KeyError(
+                            f"Dataset missing {key}; available demos: "
+                            f"{list(f['data'].keys())[:5]}..."
+                        )
+                    self.train_init_states.append(f[key][0])
+        else:
+            raise FileNotFoundError(
+                f"Init state hdf5 not found: {hdf5_path}\n"
+                f"如果是 lerobot 训练 (1.2), 请用 --hdf5_for_init_states "
+                f"指向原 robomimic hdf5 路径"
+            )
         if self.verbose:
-            print(f"[client] Loaded {len(self.train_init_states)} train init states from hdf5")
+            print(f"[client] Loaded {len(self.train_init_states)} train init states from {hdf5_path}")
 
     def close(self) -> None:
         if self.sock is not None:
@@ -243,22 +292,22 @@ class PadpRolloutClient:
                 raise RuntimeError(f"Server ERROR: {reply.get('msg')}")
             if reply.get("type") != Msg.ACTION:
                 raise RuntimeError(f"Expected ACTION, got {reply.get('type')}")
-            action_10d = np.asarray(reply["action"], dtype=np.float32)
-            if action_10d.ndim != 1 or action_10d.shape[0] != 10:
+            action = np.asarray(reply["action"], dtype=np.float32)
+            if action.ndim != 1 or action.shape[0] != self.action_dim:
                 raise ValueError(
-                    f"Expected action shape (10,), got {action_10d.shape}"
+                    f"Expected action shape ({self.action_dim},), got {action.shape}"
                 )
             if "latency_ms" in reply:
                 self._latencies.append(float(reply["latency_ms"]))
 
-            # 3c. 10D -> 7D
-            if self.abs_action:
-                env_action = rotation_6d_to_axis_angle_batch(
-                    action_10d[None, :]
-                )[0]
+            # 3c. 4 路消融:action 维度转换
+            # - 10D rot6d: 走 rotation_6d_to_axis_angle_batch → 7D axis_angle 给 env.step
+            # - 7D axis_angle: 直接送 env.step (env.action_space 本来就是 7D)
+            if self.abs_action and self.action_dim == 10:
+                env_action = rotation_6d_to_axis_angle_batch(action[None, :])[0]
             else:
-                # 假设 server 已经发了 7D(罕见,本环境默认 abs=True)
-                env_action = action_10d
+                # 7D abs 或任意 delta: 直接送
+                env_action = action
 
             # 3d. env step
             obs, reward, done, info = self.env.step(env_action)
@@ -373,6 +422,14 @@ def main():
                         help="绝对动作(server 期望 10D 6D)")
     parser.add_argument("--timeout_sec", type=float, default=30.0)
     parser.add_argument("--max_retry", type=int, default=30)
+    # === v1.2 lerobot 并行 ===
+    parser.add_argument("--use_lerobot_env", action="store_true", default=False,
+                        help="v1.2 lerobot:用 LerobotRobomimicEnv 包装 (obs_to_lerobot)")
+    parser.add_argument("--hdf5_for_init_states", type=str, default=None,
+                        help="v1.2 lerobot:train init states 源 hdf5 (lerobot parquet 没存 sim state)")
+    # === 4 路消融:action 维度 ===
+    parser.add_argument("--action_dim", type=int, default=10, choices=[7, 10],
+                        help="action 维度: 10=rot6d (PADP), 7=axis_angle (1.2 7D)")
     args = parser.parse_args()
 
     # 解析 dataset_path(2026-06-15 主 AI 修复:不要拼 _VLA_ROOT,直接用 CWD)
@@ -419,6 +476,9 @@ def main():
         timeout_sec=args.timeout_sec,
         verbose=True,
         wait_server_ready=True,
+        use_lerobot_env=args.use_lerobot_env,
+        hdf5_for_init_states=args.hdf5_for_init_states,
+        action_dim=args.action_dim,
     )
     try:
         client.connect(max_retry=args.max_retry)
