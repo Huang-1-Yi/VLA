@@ -73,28 +73,19 @@ _DEFAULT_LEROBOT_CONFIG = "VLA/E_cti/configs/lerobot_libero7d.yaml"
 def main_lerobot():
     """跟 1.1 main() 一致,只是默认 --config 改为 lerobot config。
 
-    v1.2.4 路消融改动:
-      - 默认 --config 改为 lerobot_libero7d.yaml (7D, 默认线)
-      - 启动前自动避让端口 (8765 → 8764 → 8763 ...)
+    v1.3 Fix-B: 删 server 端 auto-avoid, 统一由 rollout 决策端口。
+      之前: server 偷偷改 sys.argv 里的 port, 但 rollout 端 `_wait_for_port`
+            拿到的是 yaml 原 port, 永远连不上 server 实际 listen 的 port (H1 根因)。
+      现在: server 是 dumb listener, 相信 caller 传的 --port; rollout 端
+            (`padp_for_test_rollout.py:_resolve_server_port`) 用 port_utils
+            .find_free_port 算好 port, 同步给 server + 自己用。
     """
     if "--config" not in sys.argv:
         sys.argv.extend(["--config", _DEFAULT_LEROBOT_CONFIG])
-    # 解析 --port 然后自动避让
-    if "--port" in sys.argv:
-        idx = sys.argv.index("--port")
-        if idx + 1 < len(sys.argv):
-            try:
-                preferred = int(sys.argv[idx + 1])
-                actual = find_free_port(preferred)
-                if actual != preferred:
-                    print(f"[lerobot_server] port {preferred} 被占用, 自动 -1 到 {actual}")
-                sys.argv[idx + 1] = str(actual)
-            except (ValueError, OSError) as e:
-                print(f"[lerobot_server] 端口避让失败: {e}, 沿用原值")
-    else:
-        # 没指定 --port, 用默认 8765 + 自动避让
-        actual = find_free_port(8765)
-        sys.argv.extend(["--port", str(actual)])
+    if "--port" not in sys.argv:
+        # caller 没传 --port, 用默认 8765 (callor 应负责 auto-avoid)
+        sys.argv.extend(["--port", "8765"])
+    # 1.2 server 不再做 find_free_port, 完全相信 --port
     _test_main()
 
 

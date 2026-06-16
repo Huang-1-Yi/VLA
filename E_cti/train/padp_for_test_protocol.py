@@ -127,21 +127,59 @@ class Msg:
     PING = "PING"
     PONG = "PONG"
     ERROR = "ERROR"
+    # v1.3:25 parallel envs (PADP_v3 AsyncVectorEnv + 1 TCP + batched 帧)
+    BATCHED_OBS = "BATCHED_OBS"
+    BATCHED_ACTION = "BATCHED_ACTION"
+    BATCHED_EP_END = "BATCHED_EP_END"
 
 
 def pack_obs(ep: int, step: int, obs: dict) -> dict:
-    """客户端 → 服务端:发 obs。"""
+    """客户端 → 服务端:发 obs (single-env, 向后兼容)。"""
     return {"type": Msg.OBS, "ep": int(ep), "step": int(step), "obs": obs}
 
 
+def pack_batched_obs(eps: list, steps: list, obs_list: list) -> dict:
+    """客户端 → 服务端:发 batched obs (B 个 env 并行)。
+
+    Args:
+        eps:   [B] int, 每个 env 的 ep id
+        steps: [B] int, 每个 env 的 step idx
+        obs_list: [B] dict, 每个 env 的 obs dict
+    """
+    assert len(eps) == len(steps) == len(obs_list), f"batched 维度不一致: {len(eps)} vs {len(steps)} vs {len(obs_list)}"
+    return {"type": Msg.BATCHED_OBS, "eps": list(map(int, eps)),
+            "steps": list(map(int, steps)), "obs_list": list(obs_list)}
+
+
 def pack_action(ep: int, step: int, action: np.ndarray, latency_ms: float = 0.0) -> dict:
-    """服务端 → 客户端:回 action。"""
+    """服务端 → 客户端:回 action (single-env, 向后兼容)。"""
     return {"type": Msg.ACTION, "ep": int(ep), "step": int(step),
             "action": action, "latency_ms": float(latency_ms)}
 
 
+def pack_batched_action(eps: list, steps: list, actions: np.ndarray, latency_ms: float = 0.0) -> dict:
+    """服务端 → 客户端:回 batched action (B 个 env 并行)。
+
+    Args:
+        eps:     [B] int
+        steps:   [B] int
+        actions: [B, D_a] np.ndarray
+    """
+    assert actions.ndim == 2, f"batched action 必须是 2D, 实际 {actions.shape}"
+    return {"type": Msg.BATCHED_ACTION, "eps": list(map(int, eps)),
+            "steps": list(map(int, steps)), "actions": actions,
+            "latency_ms": float(latency_ms)}
+
+
 def pack_ep_change() -> dict:
     return {"type": Msg.EP_CHANGE}
+
+
+def pack_batched_ep_end(eps: list, successes: list) -> dict:
+    """B 个 env 一起报 EP_END。"""
+    assert len(eps) == len(successes)
+    return {"type": Msg.BATCHED_EP_END, "eps": list(map(int, eps)),
+            "successes": [bool(s) for s in successes]}
 
 
 def pack_ep_end(ep: int, success: bool) -> dict:

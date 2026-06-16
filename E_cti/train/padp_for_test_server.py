@@ -180,28 +180,37 @@ def load_policy_from_ckpt(ckpt_path: str, config_path: str = None, device: str =
     return wrapped, cfg
 
 
-def obs_to_torch(obs: dict, device: str) -> dict:
+def obs_to_torch(obs: dict, device: str, batched: bool = False) -> dict:
     """客户端发来的 obs(dict,值是 numpy array) → torch dict,加 batch 维。
 
-    客户端约定:
+    客户端约定 (single-env mode, batched=False):
       - rgb keys:  (C, H, W) uint8       (3D,转 torch 后是 (C, H, W))
       - lowdim:    (D,)  float32         (1D,转 torch 后是 (D,))
 
+    客户端约定 (batched mode, batched=True):
+      - rgb keys:  (B, C, H, W) uint8    (4D,转 torch 后是 (B, C, H, W))
+      - lowdim:    (B, D)   float32      (2D,转 torch 后是 (B, D))
+
     Policy 期望 (B, S, ...) 形式:
-      - rgb:  (1, 1, C, H, W)  ← 从 3D unsqueeze 两次
-      - lowdim: (1, 1, D)       ← 从 1D unsqueeze 两次
+      - rgb:  (B, 1, C, H, W)  ← single: unsqueeze(0).unsqueeze(0); batched: unsqueeze(1)
+      - lowdim: (B, 1, D)      ← single: unsqueeze(0).unsqueeze(0); batched: unsqueeze(1)
     """
     out = {}
     for k, v in obs.items():
         if not isinstance(v, np.ndarray):
             raise TypeError(f"obs[{k}] must be numpy array, got {type(v)}")
         t = torch.from_numpy(v.astype(np.float32) if v.dtype != np.uint8 else v)
-        if t.dim() in (1, 3):    # 单帧: (D,) 或 (C,H,W) → (1, 1, ...)
-            t = t.unsqueeze(0).unsqueeze(0)
-        elif t.dim() == 2:        # (B, D) → (B, 1, D)
+        if batched:
+            # (B, C, H, W) → (B, 1, C, H, W); (B, D) → (B, 1, D)
             t = t.unsqueeze(1)
         else:
-            t = t.unsqueeze(0)  # 多帧,只加 batch
+            # (D,) → (1, 1, D); (C, H, W) → (1, 1, C, H, W); (B, D) → (B, 1, D)
+            if t.dim() in (1, 3):
+                t = t.unsqueeze(0).unsqueeze(0)
+            elif t.dim() == 2:
+                t = t.unsqueeze(1)
+            else:
+                t = t.unsqueeze(0)
         out[k] = t.to(device, non_blocking=True)
     return out
 
@@ -248,7 +257,7 @@ def handle_client(conn, addr, policy, device, cfg, server_reset_on_ep_change: bo
                     step = frame.get("step", -1)
                     t0 = time.time()
                     try:
-                        obs_t = obs_to_torch(frame["obs"], device)
+                        obs_t = obs_to_torch(frame["obs"], device, batched=False)
                     except Exception as e:
                         send_framed(conn, pack_error(f"obs_to_torch 失败: {e}"))
                         continue
@@ -272,8 +281,57 @@ def handle_client(conn, addr, policy, device, cfg, server_reset_on_ep_change: bo
                                                   action=action, latency_ms=latency_ms))
                     total_steps += 1
                     if total_steps % 50 == 0:
-                        logger.info("[server] 已处理 %d steps (最近 ep=%d step=%d, latency=%.1fms)",
-                                    total_steps, ep, step, latency_ms)
+                        logger.info("[server] total_steps=%d", total_steps)
+                    continue
+
+                if msg_type == Msg.BATCHED_OBS:
+                    # v1.3.1:25 parallel envs (PADP_v3 AsyncVectorEnv 风格)
+                    # 1 次收 B 个 obs, 1 次 inference, 1 次回 B 个 action
+                    eps = frame.get("eps", [])
+                    steps = frame.get("steps", [])
+                    obs_list = frame.get("obs_list", [])
+                    B = len(eps)
+                    t0 = time.time()
+                    # 把 B 个 obs 拼成 batched obs_dict (每 key 的值 stack 在 axis=0)
+                    if B == 0 or not obs_list:
+                        send_framed(conn, pack_error("BATCHED_OBS 空 batch"))
+                        continue
+                    try:
+                        # obs_to_torch 一次性处理, 每 key 的 numpy 都是 (B, ...)
+                        merged = {}
+                        for k in obs_list[0].keys():
+                            merged[k] = np.stack(
+                                [np.asarray(o[k]) for o in obs_list], axis=0)
+                        obs_t = obs_to_torch(merged, device, batched=True)
+                    except Exception as e:
+                        logger.exception("[server] batched obs_to_torch 失败")
+                        send_framed(conn, pack_error(f"batched obs_to_torch 失败: {e}"))
+                        continue
+                    try:
+                        with torch.no_grad():
+                            out = policy.predict_action(obs_t)
+                    except Exception as e:
+                        logger.exception("[server] batched predict_action 失败")
+                        send_framed(conn, pack_error(f"batched predict_action 失败: {e}"))
+                        continue
+                    # out.actions shape: (B, n_action_steps, D) 或 (B, 1, D)
+                    actions = out.actions.detach().cpu().numpy()  # (B, H, D) 或 (B, 1, D)
+                    # 取第一个 action step → (B, D)
+                    if actions.ndim == 3:
+                        actions = actions[:, 0, :]  # (B, D)
+                    elif actions.ndim == 2:
+                        # 已经是 (B, D), OK
+                        pass
+                    else:
+                        send_framed(conn, pack_error(f"batched action 维度异常: {actions.shape}"))
+                        continue
+                    latency_ms = (time.time() - t0) * 1000.0
+                    send_framed(conn, pack_batched_action(eps=eps, steps=steps,
+                                                         actions=actions, latency_ms=latency_ms))
+                    total_steps += B
+                    if total_steps % (50 * B) == 0:
+                        logger.info("[server] batched 已处理 %d steps (latency=%.1fms)",
+                                    total_steps, latency_ms)
                     continue
 
                 # 未知类型

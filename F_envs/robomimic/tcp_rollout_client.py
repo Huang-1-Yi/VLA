@@ -42,7 +42,8 @@ if str(_VLA_ROOT) not in sys.path:
 
 from E_cti.train.padp_for_test_protocol import (
     send_framed, recv_framed,
-    Msg, pack_obs, pack_ep_change, pack_ep_end, pack_ping, pack_pong,
+    Msg, pack_obs, pack_batched_obs, pack_ep_change, pack_ep_end,
+    pack_batched_ep_end, pack_ping, pack_pong,
 )
 
 # 6D→axis_angle 反转换
@@ -97,6 +98,8 @@ class PadpRolloutClient:
         # 10 = rot6d (PADP 标准, 1.1_10D / 1.2_10D)
         # 7  = axis_angle (1.1_7D / 1.2_7D, server 直接发 7D 不转)
         action_dim: int = 10,
+        # === v1.3:25 parallel envs (PADP_v3 AsyncVectorEnv + 1 TCP + batched 帧) ===
+        n_parallel: int = 1,
     ):
         self.host = host
         self.port = int(port)
@@ -122,6 +125,9 @@ class PadpRolloutClient:
         # 4 路消融:action 维度(10=rot6d, 7=axis_angle)
         assert int(action_dim) in (7, 10), f"action_dim 必须是 7 或 10, 收到 {action_dim}"
         self.action_dim = int(action_dim)
+        # v1.3:25 parallel envs 模式 (>1 时走 batched 帧)
+        assert int(n_parallel) >= 1, f"n_parallel 必须是 >=1"
+        self.n_parallel = int(n_parallel)
 
         self.sock: Optional[socket.socket] = None
         self.env = None
@@ -380,6 +386,185 @@ class PadpRolloutClient:
                   f"elapsed={elapsed:.1f}s avg_latency={avg_latency:.1f}ms")
         return result
 
+    # ============================================================
+    # v1.3:25 parallel envs (PADP_v3 AsyncVectorEnv + 1 TCP + batched 帧)
+    # ============================================================
+    def _make_one_env_fn(self, idx: int):
+        """生成第 idx 个 env 工厂 (gym.vector.AsyncVectorEnv 调用)。"""
+        from C_sim.robomimic.interface_robomimic_env import make_robomimic_env
+        import F_envs.robomimic  # noqa: F401
+        from F_envs.robomimic import make_env as _make_env_mod
+
+        def _thunk():
+            # 1 个 env (跟 single-env _load_env 同样的逻辑)
+            if self.use_lerobot_env:
+                factory_dataset_path = self.hdf5_for_init_states
+            else:
+                factory_dataset_path = self.dataset_path
+            if factory_dataset_path and os.path.exists(factory_dataset_path):
+                _make_env_mod._DEFAULT_DATASETS[self.task_name] = factory_dataset_path
+
+            raw_env = make_robomimic_env(
+                task_name=self.task_name,
+                shape_meta=self.shape_meta,
+                max_steps=self.max_steps,
+                abs_action=self.abs_action,
+            )
+            if self.use_lerobot_env:
+                from F_envs.robomimic.lerobot_robomimic_env import LerobotRobomimicEnv
+                return LerobotRobomimicEnv(raw_env)
+            return raw_env
+        return _thunk
+
+    def _load_env_batched(self, n_envs: int):
+        """懒加载 n_envs 个 env (AsyncVectorEnv 模式), 全部用同 1 个 dataset_path。"""
+        try:
+            from gymnasium.vector import AsyncVectorEnv
+        except ImportError:
+            from gym.vector import AsyncVectorEnv  # gym 0.21
+        if self.verbose:
+            print(f"[client] Loading {n_envs} parallel envs for task {self.task_name!r} "
+                  f"(lerobot_wrapper={self.use_lerobot_env}) ...")
+        env_fns = [self._make_one_env_fn(i) for i in range(n_envs)]
+        self.venv = AsyncVectorEnv(env_fns)
+        if self.verbose:
+            print(f"[client] AsyncVectorEnv ready: num_envs={n_envs}, observation_space={self.venv.single_observation_space}")
+
+    def run_all_batched(self) -> dict:
+        """v1.3:25 parallel envs (PADP_v3 风格, 1 TCP + batched 帧)。
+
+        流程:
+          1. AsyncVectorEnv 启 n_parallel 个 env (multiprocessing spawn)
+          2. 1 次 EP_CHANGE → 等 RESET_ACK
+          3. 跑 max_steps 步, 每步:
+             a) 收集 B 个 env 的 obs → 1 个 BATCHED_OBS 帧
+             b) 1 个 BATCHED_ACTION 帧回 (B, D) action
+             c) 10D → 7D (如果是 1.1_10D / 1.2_10D)
+             d) venv.step(actions) → B 个 env 并行 step
+          4. 1 个 BATCHED_EP_END 帧报 results
+        """
+        if self.sock is None:
+            raise RuntimeError("Not connected; call connect() first")
+        B = self.n_parallel
+        if B <= 1:
+            # fallback 到 single-env
+            return self.run_all()
+
+        # 1. 启 n_parallel 个 env
+        self._load_env_batched(B)
+
+        t_start = time.time()
+        # 2. 通知 server 开始 EP
+        send_framed(self.sock, pack_ep_change())
+        ack = recv_framed(self.sock)
+        if ack is None or ack.get("type") != Msg.RESET_ACK:
+            raise ConnectionError(f"EP_CHANGE no RESET_ACK: got {ack}")
+
+        # 3. reset B 个 env (AsyncVectorEnv 自动 reset)
+        obs_list = self.venv.reset()  # dict of (B, ...) arrays
+        # 4. 主循环
+        B_rewards = np.zeros(B, dtype=np.float32)
+        B_max_rewards = np.zeros(B, dtype=np.float32)
+        B_dones = np.zeros(B, dtype=bool)  # True 表示该 env 已 done
+        B_steps = np.zeros(B, dtype=int)
+        # AsyncVectorEnv 用 gymnasium 风格 done mask (terminated | truncated)
+        # 当 done=True, 该 env 自动 reset, 但 obs 是 reset 后 (在 step() 返回)
+        # 我们用 auto_reset 简化
+
+        t_first_step = None
+        for t in range(self.max_steps):
+            # 3a. 收集 B 个 obs
+            if isinstance(obs_list, tuple):
+                # gymnasium 风格: (obs, info) — 但 AsyncVectorEnv 没 info
+                obs_dict = obs_list
+            else:
+                obs_dict = obs_list
+            # 编码 obs (跟 single-env env_obs_to_msgpack_obs 类似)
+            mp_obs_dict = self._env_obs_to_msgpack_obs_batched(obs_dict)
+            # 3b. 1 个 BATCHED_OBS 帧
+            eps = list(range(B))
+            steps = [t] * B
+            t0 = time.time()
+            if t_first_step is None:
+                t_first_step = t0
+            send_framed(self.sock, pack_batched_obs(eps=eps, steps=steps, obs_list=mp_obs_dict))
+            # 3c. 1 个 BATCHED_ACTION 帧回
+            reply = recv_framed(self.sock)
+            if reply is None:
+                raise ConnectionError("Server closed connection mid-batch")
+            if reply.get("type") == Msg.ERROR:
+                raise RuntimeError(f"Server ERROR: {reply.get('msg')}")
+            if reply.get("type") != Msg.BATCHED_ACTION:
+                raise RuntimeError(f"Expected BATCHED_ACTION, got {reply.get('type')}")
+            actions = np.asarray(reply["actions"], dtype=np.float32)
+            if actions.ndim != 2 or actions.shape != (B, self.action_dim):
+                raise ValueError(f"Expected actions shape ({B}, {self.action_dim}), got {actions.shape}")
+            if "latency_ms" in reply:
+                self._latencies.append(float(reply["latency_ms"]))
+            # 3d. 10D → 7D (abs_action + 10D 时)
+            if self.abs_action and self.action_dim == 10:
+                env_actions = rotation_6d_to_axis_angle_batch(actions)  # (B, 7)
+            else:
+                env_actions = actions
+            # 3e. AsyncVectorEnv 并行 step
+            # gym 0.21: (obs, reward, done, info) 4-tuple; gymnasium: (obs, reward, term, trunc, info) 5-tuple
+            step_ret = self.venv.step(env_actions)
+            if len(step_ret) == 5:
+                obs_list, rewards, terms, truncs, infos = step_ret
+                new_dones = terms | truncs
+            else:
+                obs_list, rewards, dones, infos = step_ret
+                new_dones = dones
+            # 3f. 累加 reward
+            B_rewards += rewards
+            B_max_rewards = np.maximum(B_max_rewards, rewards)
+            B_steps += 1
+            for i in range(B):
+                if new_dones[i] and not B_dones[i]:
+                    B_dones[i] = True
+                    if self.verbose:
+                        print(f"[client] ep {i} done at step={t}: max_reward={B_max_rewards[i]:.2f}")
+
+        # 4. 报 EP_END (B 个 env)
+        successes = [bool(mr > 0.5) for mr in B_max_rewards]
+        send_framed(self.sock, pack_batched_ep_end(eps=list(range(B)), successes=successes))
+
+        # 5. 统计
+        elapsed = time.time() - t_start
+        avg_latency = float(np.mean(self._latencies)) if self._latencies else 0.0
+        n_success = int(np.sum([s for s in successes]))
+        success_rate = n_success / B
+
+        result = {
+            "n_parallel": B,
+            "n_episodes": B,
+            "n_success": n_success,
+            "success_rate": success_rate,
+            "max_rewards": [float(x) for x in B_max_rewards],
+            "rewards_sum": [float(x) for x in B_rewards],
+            "steps_per_ep": [int(x) for x in B_steps],
+            "episodes_done": [bool(x) for x in B_dones],
+            "elapsed_sec": elapsed,
+            "avg_inference_time_ms": avg_latency,
+            "total_steps": int(np.sum(B_steps)),
+        }
+        if self.verbose:
+            print(f"[client] DONE (batched, n_parallel={B}): "
+                  f"success_rate={success_rate:.2%} ({n_success}/{B}) "
+                  f"steps={int(np.sum(B_steps))} elapsed={elapsed:.1f}s "
+                  f"avg_latency={avg_latency:.1f}ms")
+        return result
+
+    def _env_obs_to_msgpack_obs_batched(self, obs_dict: dict) -> list:
+        """B 个 env 的 obs dict (B, ...) → msgpack-able list of dicts (跟 single-env obs 一致)."""
+        keys = list(obs_dict.keys())
+        B = len(obs_dict[keys[0]]) if keys else 0
+        out = []
+        for i in range(B):
+            o = {k: np.asarray(obs_dict[k][i]) for k in keys}
+            out.append(o)
+        return out
+
 
 # ============================================================
 # CLI
@@ -430,6 +615,9 @@ def main():
     # === 4 路消融:action 维度 ===
     parser.add_argument("--action_dim", type=int, default=10, choices=[7, 10],
                         help="action 维度: 10=rot6d (PADP), 7=axis_angle (1.2 7D)")
+    # === v1.3:25 parallel envs (PADP_v3 AsyncVectorEnv 风格) ===
+    parser.add_argument("--n_parallel", type=int, default=1,
+                        help="v1.3:并行 env 数 (>1 时走 batched 25 parallel 模式, 跟 PADP_v3 一致)")
     args = parser.parse_args()
 
     # 解析 dataset_path(2026-06-15 主 AI 修复:不要拼 _VLA_ROOT,直接用 CWD)
@@ -479,10 +667,15 @@ def main():
         use_lerobot_env=args.use_lerobot_env,
         hdf5_for_init_states=args.hdf5_for_init_states,
         action_dim=args.action_dim,
+        n_parallel=args.n_parallel,
     )
     try:
         client.connect(max_retry=args.max_retry)
-        result = client.run_all()
+        # v1.3:25 parallel envs 模式 (PADP_v3 风格)
+        if args.n_parallel > 1:
+            result = client.run_all_batched()
+        else:
+            result = client.run_all()
         print(json.dumps(result, indent=2, default=_json_default))
     finally:
         client.close()

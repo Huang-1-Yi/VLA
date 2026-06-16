@@ -38,6 +38,21 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
+def _resolve_server_port(preferred: int) -> int:
+    """Fix-A: rollout 跟 server 用同一 find_free_port, 统一行为。
+
+    之前: rollout 只信 yaml port (8765), 1.2 server 自己 find_free_port 改到 8763,
+          rollout 端 `_wait_for_port(8765)` 永远连不上, 60s 失败。
+
+    现在: rollout 端用 port_utils.find_free_port (跟 server 同套函数),
+          返回的 port 传给 server_cmd + _wait_for_port, 一致。
+    """
+    from E_cti.train.port_utils import find_free_port
+    if preferred <= 0:
+        preferred = 8765
+    return find_free_port(preferred)
+
+
 def _wait_for_port(host: str, port: int, timeout: float) -> bool:
     """轮询 server 是否开始 listen,timeout 内 True/False。"""
     deadline = time.time() + timeout
@@ -69,7 +84,9 @@ def run_rollout_via_server_client(policy, ema, cfg, epoch) -> float:
     n_test = int(rollout_cfg.get("n_test", 3))
     max_steps = int(rollout_cfg.get("max_steps", 400))
     host = server_cfg.get("host", "127.0.0.1")
-    port = int(server_cfg.get("port", 0)) or _find_free_port()
+    # Fix-A: 用 port_utils.find_free_port (跟 server 同一函数), 避免 H1 端口契约脱节
+    preferred = int(server_cfg.get("port", 0)) or 8765
+    port = _resolve_server_port(preferred)
     wait_timeout = float(server_cfg.get("wait_timeout_sec", 60))
 
     # === 1. Dump 临时 ckpt (server 加载用) ===

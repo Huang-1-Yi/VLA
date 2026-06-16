@@ -119,7 +119,7 @@ rollout:
   test_start_seed: 10000
   server:
     host: 127.0.0.1
-    port: 8765
+    port: 8762                         # Fix-E:避开 1.1_10D (8765) / 1.1_7D (8764) / 1.2_10D (8763)
     spawn: True
     wait_timeout_sec: 60
   client:
